@@ -46,7 +46,7 @@ if (cacheSyncChannel) {
  * @param {any} viewer
  * @returns {Promise<any | null>}
  */
-function requestCacheFromOtherWindow(folder, viewer) {
+function requestCacheFromOtherWindow(folder, viewer, context = null) {
   if (!cacheSyncChannel) return Promise.resolve(null);
 
   return new Promise((resolve) => {
@@ -67,7 +67,7 @@ function requestCacheFromOtherWindow(folder, viewer) {
           clearTimeout(timeout);
           cacheSyncChannel.removeEventListener('message', listener);
           try {
-            const restored = deserializeForSync(msg.data, viewer);
+            const restored = deserializeForSync(msg.data, viewer, context);
             resolve(restored);
           } catch (err) {
             console.warn('[3D 뷰어 캐시 동기화] 역직렬화 실패:', err);
@@ -109,7 +109,7 @@ function serializeForSync(cacheEntry) {
 /**
  * 수신한 구조화 데이터를 바탕으로 Three.js 텍스처를 재생성하여 캐시 복원
  */
-function deserializeForSync(serialized, viewer) {
+function deserializeForSync(serialized, viewer, context = null) {
   const parsedIniEntries = serialized.parsedIniEntries.map((entry) => {
     const components = entry.components.map((c) => {
       let diffuseTexture = null;
@@ -118,10 +118,18 @@ function deserializeForSync(serialized, viewer) {
       if (c.diffuseBytes) {
         try {
           if (c.diffuseIsDds) {
-            diffuseTexture = parseDdsTexture(c.diffuseBytes, viewer?.renderer);
+            diffuseTexture = parseDdsTexture(c.diffuseBytes, context, viewer?.renderer, { isDiffuse: true, isNormal: false });
           }
         } catch (e) {
           console.warn('[3D 뷰어 캐시 복원] Diffuse 복원 실패:', e);
+        }
+      }
+
+      if (c.normalBytes) {
+        try {
+          normalTexture = parseDdsTexture(c.normalBytes, context, viewer?.renderer, { isDiffuse: false, isNormal: true });
+        } catch (e) {
+          console.warn('[3D 뷰어 캐시 복원] Normal 복원 실패:', e);
         }
       }
 
@@ -181,7 +189,7 @@ export async function loadModData({ folder, context, viewer, onProgress, forceRe
   // 2. 다른 창(메인 창 <-> 별도 OS 창)에 이미 로딩된 3D 데이터가 있는지 확인 (중복 디스크 I/O 제거)
   if (!forceReload) {
     onProgress?.(`이전 창에서 로드된 모드 데이터 확인 중…`);
-    const remoteCache = await requestCacheFromOtherWindow(currentFolder, viewer);
+    const remoteCache = await requestCacheFromOtherWindow(currentFolder, viewer, context);
     if (remoteCache) {
       context.logger?.info(`[3D 뷰어] 다른 창으로부터 3D 모드 캐시 핸드오프 성공! 디스크 재로딩 생략 (${currentFolder})`);
       onProgress?.(`모드 데이터를 즉시 복원했습니다.`);
@@ -394,9 +402,10 @@ export async function loadModData({ folder, context, viewer, onProgress, forceRe
               diffuseBytes = await context.workspace.readBinaryFile(dPath);
               if (diffRes.filename.toLowerCase().endsWith('.dds')) {
                 diffuseIsDds = true;
-                diffuseTexture = parseDdsTexture(diffuseBytes, viewer?.renderer);
+                diffuseTexture = parseDdsTexture(diffuseBytes, context, viewer?.renderer, { isDiffuse: true, isNormal: false });
               } else {
-                diffuseTexture = await loadImageTexture(diffuseBytes, 'image/jpeg');
+                const mime = diffRes.filename.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg';
+                diffuseTexture = await loadImageTexture(diffuseBytes, mime, true);
               }
             } catch (dErr) {
               context.logger?.warn(`[${ini.name}] Diffuse 로드 경고:`, dErr);
@@ -407,7 +416,12 @@ export async function loadModData({ folder, context, viewer, onProgress, forceRe
             try {
               const nPath = resolveFilePath(ini.dir, normRes.filename);
               normalBytes = await context.workspace.readBinaryFile(nPath);
-              normalTexture = await loadImageTexture(normalBytes, 'image/jpeg');
+              if (normRes.filename.toLowerCase().endsWith('.dds')) {
+                normalTexture = parseDdsTexture(normalBytes, context, viewer?.renderer, { isDiffuse: false, isNormal: true });
+              } else {
+                const mime = normRes.filename.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg';
+                normalTexture = await loadImageTexture(normalBytes, mime, false);
+              }
             } catch (nErr) {
               context.logger?.warn(`[${ini.name}] Normal 로드 경고:`, nErr);
             }

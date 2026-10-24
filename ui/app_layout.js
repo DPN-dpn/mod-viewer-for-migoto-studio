@@ -461,12 +461,12 @@ export function render3DViewer(container, context, initialFolder, onFolderChange
       const targetPath = `${normFolder}/${texFileName}`;
 
       const bytes = await context.workspace.readBinaryFile(targetPath);
-      let newTex = null;
+      const isNormal = /normal|norm/i.test(texFileName);
       if (texFileName.toLowerCase().endsWith('.dds')) {
-        newTex = parseDdsTexture(bytes, viewer?.renderer);
+        newTex = parseDdsTexture(bytes, context, viewer?.renderer, { isNormal, isDiffuse: !isNormal });
       } else {
         const mime = texFileName.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg';
-        newTex = await loadImageTexture(bytes, mime);
+        newTex = await loadImageTexture(bytes, mime, !isNormal);
       }
 
       viewer?.setPartTexture(partKey, newTex, texFileName);

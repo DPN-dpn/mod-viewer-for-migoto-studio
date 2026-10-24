@@ -1,144 +1,132 @@
 /**
  * core/dds_decoder.js
- * DDS (DirectDraw Surface) 텍스처 헤더 파싱 및 WebGL 하드웨어 압축 텍스처(BPTC/BC7, S3TC/DXT) 또는
- * 일반 이미지(JPG, PNG) Blob 텍스처 변환기
+ * Migoto Studio 내장 플러그인 'texture-library' (>=1.0.0)의 decodeDDS API를 호출하여
+ * DDS 텍스처(BC1~BC7, sRGB/Linear)를 Three.js DataTexture로 변환합니다.
+ * 자체 디코딩 코드를 중복 포함하지 않고 texture-library 플러그인에 종속성을 가집니다.
  */
 
 import * as THREE from '../libs/three.module.js';
 
-// WebGL 상수 정의
-const COMPRESSED_RGB_S3TC_DXT1_EXT = 0x83F0;
-const COMPRESSED_RGBA_S3TC_DXT1_EXT = 0x83F1;
-const COMPRESSED_RGBA_S3TC_DXT3_EXT = 0x83F2;
-const COMPRESSED_RGBA_S3TC_DXT5_EXT = 0x83F3;
-const COMPRESSED_RGBA_BPTC_UNORM_EXT = 0x8E8C;
-
 /**
- * DDS 파일 Uint8Array를 Three.js 텍스처로 파싱
- * @param {Uint8Array} buffer
- * @param {THREE.WebGLRenderer} renderer
- * @returns {THREE.Texture | THREE.CompressedTexture | null}
+ * GPU 최대 텍스처 해상도에 맞춘 안전한 다운샘플링 헬퍼
  */
-export function parseDdsTexture(buffer, renderer) {
-  if (buffer.byteLength < 128) {
-    console.warn('[dds_decoder] Buffer too small for DDS');
-    return null;
+function downsampleIfNeeded(rgba, width, height, maxSize = 4096) {
+  if (width <= maxSize && height <= maxSize) {
+    return { rgba, width, height };
   }
 
-  const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
-  const magic = String.fromCharCode(
-    buffer[0], buffer[1], buffer[2], buffer[3]
-  );
+  const scale = Math.min(maxSize / width, maxSize / height);
+  const targetW = Math.max(1, Math.floor(width * scale));
+  const targetH = Math.max(1, Math.floor(height * scale));
 
-  if (magic !== 'DDS ') {
-    console.warn('[dds_decoder] Invalid DDS magic:', magic);
-    return null;
-  }
+  const newRgba = new Uint8ClampedArray(targetW * targetH * 4);
+  const xRatio = width / targetW;
+  const yRatio = height / targetH;
 
-  const height = view.getUint32(12, true);
-  const width = view.getUint32(16, true);
-  const mipmapCount = Math.max(1, view.getUint32(28, true));
-  const fourCC = String.fromCharCode(
-    buffer[84], buffer[85], buffer[86], buffer[87]
-  );
+  for (let dy = 0; dy < targetH; dy++) {
+    const sy = Math.min(height - 1, Math.floor(dy * yRatio));
+    const sRow = sy * width * 4;
+    const dRow = dy * targetW * 4;
 
-  let dataOffset = 128;
-  let dxgiFormat = 0;
+    for (let dx = 0; dx < targetW; dx++) {
+      const sx = Math.min(width - 1, Math.floor(dx * xRatio));
+      const sIdx = sRow + sx * 4;
+      const dIdx = dRow + dx * 4;
 
-  if (fourCC === 'DX10') {
-    dataOffset = 148;
-    dxgiFormat = view.getUint32(128, true);
-  }
-
-  const gl = renderer ? renderer.getContext() : null;
-  const bptcExt = gl ? (gl.getExtension('WEBGL_compressed_texture_bptc') || gl.getExtension('EXT_texture_compression_bptc')) : null;
-  const s3tcExt = gl ? (gl.getExtension('WEBGL_compressed_texture_s3tc') || gl.getExtension('WEBGL_compressed_texture_s3tc_srgb')) : null;
-
-  // 1. BC7 포맷 (DXGI 98: BC7_TYPELESS, 99: BC7_UNORM, 100: BC7_UNORM_SRGB)
-  if (fourCC === 'DX10' && (dxgiFormat === 98 || dxgiFormat === 99 || dxgiFormat === 100)) {
-    if (bptcExt) {
-      const glFormat = COMPRESSED_RGBA_BPTC_UNORM_EXT;
-      const mipmaps = extractMipmaps(buffer, dataOffset, width, height, mipmapCount, 16);
-      const texture = new THREE.CompressedTexture(mipmaps, width, height, glFormat);
-      texture.minFilter = mipmaps.length > 1 ? THREE.LinearMipmapLinearFilter : THREE.LinearFilter;
-      texture.magFilter = THREE.LinearFilter;
-      texture.generateMipmaps = false;
-      texture.needsUpdate = true;
-      return texture;
-    } else {
-      console.warn('[dds_decoder] WEBGL_compressed_texture_bptc extension not supported on this device/context.');
+      newRgba[dIdx] = rgba[sIdx];
+      newRgba[dIdx + 1] = rgba[sIdx + 1];
+      newRgba[dIdx + 2] = rgba[sIdx + 2];
+      newRgba[dIdx + 3] = rgba[sIdx + 3];
     }
   }
 
-  // 2. DXT1 / BC1 포맷
-  if (fourCC === 'DXT1' || (fourCC === 'DX10' && (dxgiFormat === 70 || dxgiFormat === 71 || dxgiFormat === 72))) {
-    if (s3tcExt) {
-      const glFormat = COMPRESSED_RGBA_S3TC_DXT1_EXT;
-      const mipmaps = extractMipmaps(buffer, dataOffset, width, height, mipmapCount, 8);
-      const texture = new THREE.CompressedTexture(mipmaps, width, height, glFormat);
-      texture.minFilter = mipmaps.length > 1 ? THREE.LinearMipmapLinearFilter : THREE.LinearFilter;
-      texture.magFilter = THREE.LinearFilter;
-      texture.generateMipmaps = false;
-      texture.needsUpdate = true;
-      return texture;
-    }
-  }
-
-  // 3. DXT5 / BC3 포맷
-  if (fourCC === 'DXT5' || (fourCC === 'DX10' && (dxgiFormat === 76 || dxgiFormat === 77 || dxgiFormat === 78))) {
-    if (s3tcExt) {
-      const glFormat = COMPRESSED_RGBA_S3TC_DXT5_EXT;
-      const mipmaps = extractMipmaps(buffer, dataOffset, width, height, mipmapCount, 16);
-      const texture = new THREE.CompressedTexture(mipmaps, width, height, glFormat);
-      texture.minFilter = mipmaps.length > 1 ? THREE.LinearMipmapLinearFilter : THREE.LinearFilter;
-      texture.magFilter = THREE.LinearFilter;
-      texture.generateMipmaps = false;
-      texture.needsUpdate = true;
-      return texture;
-    }
-  }
-
-  // 폴백: 단색 캔버스 텍스처 반환
-  console.info('[dds_decoder] Falling back to default textured canvas for DDS');
-  return createFallbackTexture(width, height);
+  return { rgba: newRgba, width: targetW, height: targetH };
 }
 
 /**
- * Mipmap 버퍼 슬라이스 추출
+ * texture-library 플러그인의 decodeDDS API를 활용하여 Three.js Texture로 변환
+ * @param {Uint8Array} buffer
+ * @param {object | THREE.WebGLRenderer} contextOrRenderer - PluginContext 또는 WebGLRenderer
+ * @param {THREE.WebGLRenderer | object} [maybeRenderer]
+ * @param {object} [maybeOptions]
+ * @param {boolean} [maybeOptions.isNormal=false]
+ * @param {boolean} [maybeOptions.isDiffuse=true]
+ * @returns {THREE.DataTexture | null}
  */
-function extractMipmaps(buffer, offset, width, height, count, blockSize) {
-  const mipmaps = [];
-  let w = width;
-  let h = height;
-  let currOffset = offset;
+export function parseDdsTexture(buffer, contextOrRenderer = null, maybeRenderer = null, maybeOptions = {}) {
+  let context = null;
+  let renderer = null;
+  let options = {};
 
-  for (let i = 0; i < count; i++) {
-    const blocksW = Math.max(1, Math.floor((w + 3) / 4));
-    const blocksH = Math.max(1, Math.floor((h + 3) / 4));
-    const dataLength = blocksW * blocksH * blockSize;
-
-    if (currOffset + dataLength > buffer.byteLength) {
-      break;
-    }
-
-    const data = new Uint8Array(buffer.buffer, buffer.byteOffset + currOffset, dataLength);
-    mipmaps.push({ data, width: w, height: h });
-
-    currOffset += dataLength;
-    w = Math.max(1, Math.floor(w / 2));
-    h = Math.max(1, Math.floor(h / 2));
+  if (contextOrRenderer && (contextOrRenderer.plugins || contextOrRenderer.workspace || contextOrRenderer.logger)) {
+    context = contextOrRenderer;
+    renderer = maybeRenderer || null;
+    options = maybeOptions || {};
+  } else {
+    renderer = contextOrRenderer || null;
+    options = maybeRenderer || {};
+    context = options.context || null;
   }
 
-  return mipmaps;
+  try {
+    // 1. 종속성 플러그인 'texture-library'의 공개 API 조회
+    const texLib = context?.plugins?.getPluginApi?.('texture-library');
+
+    if (!texLib || typeof texLib.decodeDDS !== 'function') {
+      context?.logger?.warn('[3D 뷰어] 종속성 플러그인 "texture-library" (>=1.0.0)가 활성화되어 있지 않거나 decodeDDS API를 찾을 수 없습니다.');
+      return createFallbackTexture(512, 512);
+    }
+
+    // 2. texture-library의 디코더 호출 (BC1~BC7, DX10, sRGB/Linear 판별 지원)
+    const decoded = texLib.decodeDDS(buffer);
+    if (!decoded || !decoded.rgba || !decoded.width || !decoded.height) {
+      context?.logger?.warn('[3D 뷰어] texture-library를 통한 DDS 디코딩 결과가 올바르지 않습니다.');
+      return createFallbackTexture(512, 512);
+    }
+
+    // 3. 노멀맵 또는 옵션에 따른 sRGB/Linear 색공간 확정
+    const isSRGB = options.isNormal ? false : Boolean(decoded.isSRGB);
+
+    // 4. GPU 최대 텍스처 해상도 초과 방지
+    const gl = renderer?.getContext?.();
+    const maxTextureSize = gl ? gl.getParameter(gl.MAX_TEXTURE_SIZE) || 4096 : 4096;
+    const { rgba, width, height } = downsampleIfNeeded(decoded.rgba, decoded.width, decoded.height, maxTextureSize);
+
+    // 5. Three.js DataTexture 생성
+    const pixelData = new Uint8Array(rgba.buffer, rgba.byteOffset, rgba.byteLength);
+    const texture = new THREE.DataTexture(
+      pixelData,
+      width,
+      height,
+      THREE.RGBAFormat,
+      THREE.UnsignedByteType
+    );
+
+    texture.wrapS = THREE.RepeatWrapping;
+    texture.wrapT = THREE.RepeatWrapping;
+    texture.magFilter = THREE.LinearFilter;
+    texture.minFilter = THREE.LinearMipmapLinearFilter;
+    texture.generateMipmaps = true;
+
+    // 저장 방식에 따른 sRGB vs Linear 색공간 정확한 적용
+    texture.colorSpace = isSRGB ? THREE.SRGBColorSpace : THREE.LinearSRGBColorSpace;
+    texture.needsUpdate = true;
+
+    return texture;
+  } catch (err) {
+    context?.logger?.warn('[3D 뷰어] DDS 텍스처 로드 실패:', err);
+    return createFallbackTexture(512, 512);
+  }
 }
 
 /**
  * 일반 이미지 (JPG, PNG) 바이너리를 Three.js Texture로 비동기 변환
  * @param {Uint8Array} buffer
  * @param {string} mimeType
+ * @param {boolean} [isSRGB=true]
  * @returns {Promise<THREE.Texture>}
  */
-export async function loadImageTexture(buffer, mimeType = 'image/jpeg') {
+export async function loadImageTexture(buffer, mimeType = 'image/jpeg', isSRGB = true) {
   return new Promise((resolve, reject) => {
     const blob = new Blob([buffer], { type: mimeType });
     const url = URL.createObjectURL(blob);
@@ -147,8 +135,13 @@ export async function loadImageTexture(buffer, mimeType = 'image/jpeg') {
     img.onload = () => {
       URL.revokeObjectURL(url);
       const texture = new THREE.Texture(img);
+      texture.wrapS = THREE.RepeatWrapping;
+      texture.wrapT = THREE.RepeatWrapping;
+      texture.magFilter = THREE.LinearFilter;
+      texture.minFilter = THREE.LinearMipmapLinearFilter;
+      texture.generateMipmaps = true;
+      texture.colorSpace = isSRGB ? THREE.SRGBColorSpace : THREE.LinearSRGBColorSpace;
       texture.needsUpdate = true;
-      texture.colorSpace = THREE.SRGBColorSpace;
       resolve(texture);
     };
 

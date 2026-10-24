@@ -72,25 +72,29 @@ export class ModViewer3D {
   }
 
   initLights() {
-    // 환경광
-    const hemiLight = new THREE.HemisphereLight(0xffffff, 0x333b4d, 0.9);
-    hemiLight.position.set(0, 20, 0);
-    this.scene.add(hemiLight);
+    // 1. 전체 기본 조도 (Ambient Light: 그림자 없는 부드러운 기본 밝기 보장)
+    this.ambientLight = new THREE.AmbientLight(0xffffff, 0.75);
+    this.scene.add(this.ambientLight);
 
-    // 주 조명 (Key Light)
-    this.dirLight1 = new THREE.DirectionalLight(0xffffff, 1.2);
+    // 2. 반구 환경광 (Hemisphere Light: 상단 흰색, 하단 부드러운 청회색)
+    this.hemiLight = new THREE.HemisphereLight(0xffffff, 0x475569, 0.6);
+    this.hemiLight.position.set(0, 20, 0);
+    this.scene.add(this.hemiLight);
+
+    // 3. 주 조명 (Key Light: 우측 전방 상단)
+    this.dirLight1 = new THREE.DirectionalLight(0xffffff, 0.9);
     this.dirLight1.position.set(5, 10, 7);
     this.scene.add(this.dirLight1);
 
-    // 보조 조명 (Fill Light)
-    this.dirLight2 = new THREE.DirectionalLight(0x88aacc, 0.7);
-    this.dirLight2.position.set(-5, 5, -5);
+    // 4. 보조 조명 (Fill Light: 좌측 후방 상단)
+    this.dirLight2 = new THREE.DirectionalLight(0xa5c4e8, 0.5);
+    this.dirLight2.position.set(-5, 6, -5);
     this.scene.add(this.dirLight2);
 
-    // 백라이트 (Rim Light)
-    const rimLight = new THREE.DirectionalLight(0xffffff, 0.5);
-    rimLight.position.set(0, -5, -8);
-    this.scene.add(rimLight);
+    // 5. 카메라 헤드라이트 (어느 각도에서 오빗 회전하여도 항상 모델이 밝게 관찰되도록 카메라에 부착)
+    this.cameraLight = new THREE.DirectionalLight(0xffffff, 0.45);
+    this.camera.add(this.cameraLight);
+    this.scene.add(this.camera);
   }
 
   initControls() {
@@ -153,11 +157,11 @@ export class ModViewer3D {
       const { name, iniName, positions, uvs, indices, parts, diffuseTexture, normalTexture } = comp;
       if (!positions || !indices) continue;
 
-      // 컴포넌트별 머티리얼 구성
+      // 컴포넌트별 머티리얼 구성 (애니메/게임 모드에 최적화된 자연스러운 PBR 파라미터)
       const mat = new THREE.MeshStandardMaterial({
         color: 0xffffff,
-        roughness: 0.65,
-        metalness: 0.1,
+        roughness: 0.75,
+        metalness: 0.05,
         side: THREE.DoubleSide,
         wireframe: this.isWireframe,
         map: diffuseTexture || null,
@@ -165,7 +169,7 @@ export class ModViewer3D {
       });
 
       if (normalTexture) {
-        mat.normalScale = new THREE.Vector2(1.0, -1.0);
+        mat.normalScale = new THREE.Vector2(1.0, 1.0);
       }
 
       this.materials.push(mat);

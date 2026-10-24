@@ -7,5 +7,8 @@
   "icon": "🧊",
   "category": "tools",
   "location": "상단 메뉴 바",
+  "dependencies": {
+    "texture-library": ">=1.0.0"
+  },
   "main": "index.js"
 }
