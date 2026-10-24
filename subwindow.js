@@ -22,6 +22,15 @@ export { render3DViewer, getActiveModFolder };
 export default async function runInNativeWindow(nativeContext) {
   nativeContext.logger?.info('3D 모드 뷰어 데스크톱 독립 OS 창(WebviewWindow)이 시작되었습니다.');
 
+  // 독립 OS 창 환경에서 plugins 객체 누락 방어
+  if (!nativeContext.plugins) {
+    nativeContext.plugins = {
+      getPluginApi(pluginId) {
+        return window.__migoto_plugin_apis?.[pluginId];
+      },
+    };
+  }
+
   // 메인 창에서 명시적으로 전달받은 initialData의 folder만 사용 (닫힌 폴더 자동 되살리기 금지)
   const folder = nativeContext.initialData?.folder || null;
   const initialViewState = nativeContext.initialData?.viewState || (folder ? getPersistedViewState(folder) : null) || null;

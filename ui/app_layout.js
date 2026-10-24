@@ -458,9 +458,27 @@ export function render3DViewer(container, context, initialFolder, onFolderChange
     try {
       context.logger?.info(`[3D 뷰어] 파츠 [${part.name}] 텍스처 변경 요청: ${texFileName}`);
       const normFolder = currentFolder.replace(/\\/g, '/');
-      const targetPath = `${normFolder}/${texFileName}`;
+      let targetPath = `${normFolder}/${texFileName}`;
 
-      const bytes = await context.workspace.readBinaryFile(targetPath);
+      let bytes = null;
+      try {
+        bytes = await context.workspace.readBinaryFile(targetPath);
+      } catch (directErr) {
+        // 모드 폴더 직하에 없는 경우 하위 폴더에서 파일명 재탐색
+        if (context.workspace?.findFiles) {
+          try {
+            const found = await context.workspace.findFiles(`**/${texFileName}`, { cwd: normFolder, maxResults: 1 });
+            if (found && found.length > 0) {
+              targetPath = found[0];
+              bytes = await context.workspace.readBinaryFile(targetPath);
+            }
+          } catch {}
+        }
+        if (!bytes) {
+          throw new Error(`파일을 찾을 수 없습니다 (${targetPath}): ${directErr?.message || directErr}`);
+        }
+      }
+
       const isNormal = /normal|norm/i.test(texFileName);
       if (texFileName.toLowerCase().endsWith('.dds')) {
         newTex = parseDdsTexture(bytes, context, viewer?.renderer, { isNormal, isDiffuse: !isNormal });
@@ -474,7 +492,7 @@ export function render3DViewer(container, context, initialFolder, onFolderChange
       if (!skipNotify) saveAndNotifyViewState();
       context.logger?.info(`[3D 뷰어] 파츠 [${part.name}] 텍스처 반영 완료 (${texFileName})`);
     } catch (err) {
-      context.logger?.warn(`[3D 뷰어] 텍스처 로드 경고 (${texFileName}):`, err);
+      context.logger?.warn(`[3D 뷰어] 텍스처 로드 경고 (${texFileName}):`, err?.message || err);
     }
   }
 

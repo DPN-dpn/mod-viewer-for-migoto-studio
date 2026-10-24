@@ -105,8 +105,8 @@ export function parseDdsTexture(buffer, contextOrRenderer = null, maybeRenderer 
     texture.wrapS = THREE.RepeatWrapping;
     texture.wrapT = THREE.RepeatWrapping;
     texture.magFilter = THREE.LinearFilter;
-    texture.minFilter = THREE.LinearMipmapLinearFilter;
-    texture.generateMipmaps = true;
+    texture.minFilter = THREE.LinearFilter;
+    texture.generateMipmaps = false;
 
     // 저장 방식에 따른 sRGB vs Linear 색공간 정확한 적용
     texture.colorSpace = isSRGB ? THREE.SRGBColorSpace : THREE.LinearSRGBColorSpace;
