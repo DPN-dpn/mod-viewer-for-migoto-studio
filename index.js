@@ -17,7 +17,6 @@ export default {
     // 1. 상단 툴바 [플러그인] 메뉴에 등록
     context.ui.registerMenuItem({
       label: '3D 모드 뷰어 열기',
-      shortcut: 'Ctrl+Shift+V',
       action: () => {
         open3DViewerSubWindow(context);
       },
@@ -31,7 +30,7 @@ export default {
       clearPersistedFolder();
     });
 
-    context.ui.showToast('3D 모드 뷰어가 준비되었습니다. [플러그인] 메뉴 또는 Ctrl+Shift+V로 열 수 있습니다.', 'info');
+    context.ui.showToast('3D 모드 뷰어가 준비되었습니다. 상단 [플러그인] 메뉴에서 열 수 있습니다.', 'info');
   },
 
   deactivate(context) {
