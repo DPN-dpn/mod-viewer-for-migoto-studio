@@ -92,25 +92,39 @@ export function parseDdsTexture(buffer, contextOrRenderer = null, maybeRenderer 
     const maxTextureSize = gl ? gl.getParameter(gl.MAX_TEXTURE_SIZE) || 4096 : 4096;
     const { rgba, width, height } = downsampleIfNeeded(decoded.rgba, decoded.width, decoded.height, maxTextureSize);
 
-    // 5. Three.js DataTexture 생성
-    const pixelData = new Uint8Array(rgba.buffer, rgba.byteOffset, rgba.byteLength);
-    const texture = new THREE.DataTexture(
-      pixelData,
-      width,
-      height,
-      THREE.RGBAFormat,
-      THREE.UnsignedByteType
-    );
+    // 5. Three.js CanvasTexture 생성
+    // (DataTexture 대신 브라우저 네이티브 Canvas2D 파이프라인을 거쳐 WebGL 흑화 및 밉맵 불완전 결함을 100% 방지)
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
 
+    const clamped = rgba instanceof Uint8ClampedArray ? rgba : new Uint8ClampedArray(rgba.buffer, rgba.byteOffset, rgba.byteLength);
+
+    // 디퓨즈 텍스처의 알파 채널이 0(스펙큘러/글로우 마스크용)으로 저장된 경우 모델이 완전 검은색으로 렌더링되는 현상 원천 차단
+    if (!options.isNormal) {
+      for (let i = 3; i < clamped.length; i += 4) {
+        if (clamped[i] === 0) {
+          clamped[i] = 255;
+        }
+      }
+    }
+
+    const imgData = new ImageData(clamped, width, height);
+    ctx.putImageData(imgData, 0, 0);
+
+    const texture = new THREE.CanvasTexture(canvas);
     texture.wrapS = THREE.RepeatWrapping;
     texture.wrapT = THREE.RepeatWrapping;
     texture.magFilter = THREE.LinearFilter;
-    texture.minFilter = THREE.LinearFilter;
-    texture.generateMipmaps = false;
+    texture.minFilter = THREE.LinearMipmapLinearFilter;
+    texture.generateMipmaps = true;
 
     // 저장 방식에 따른 sRGB vs Linear 색공간 정확한 적용
     texture.colorSpace = isSRGB ? THREE.SRGBColorSpace : THREE.LinearSRGBColorSpace;
     texture.needsUpdate = true;
+
+    context?.logger?.info(`[3D 뷰어] DDS 텍스처 적용 완료: ${width}x${height} (${decoded.format}), sRGB: ${isSRGB}, 픽셀[0]: rgba(${clamped[0]}, ${clamped[1]}, ${clamped[2]}, ${clamped[3]})`);
 
     return texture;
   } catch (err) {

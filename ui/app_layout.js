@@ -479,9 +479,10 @@ export function render3DViewer(container, context, initialFolder, onFolderChange
         }
       }
 
+      let newTex = null;
       const isNormal = /normal|norm/i.test(texFileName);
       if (texFileName.toLowerCase().endsWith('.dds')) {
-        newTex = parseDdsTexture(bytes, context, viewer?.renderer, { isNormal, isDiffuse: !isNormal });
+        newTex = await parseDdsTexture(bytes, context, viewer?.renderer, { isNormal, isDiffuse: !isNormal });
       } else {
         const mime = texFileName.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg';
         newTex = await loadImageTexture(bytes, mime, !isNormal);
