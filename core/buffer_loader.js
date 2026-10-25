@@ -97,13 +97,17 @@ export function parseTexcoordBuffer(bytes, stride = 20, vertexCount = 0) {
   // 3. HalfFloat at offset 4, 6 (Stride 24, 16 - 무기/보조 UV 및 레거시 HalfFloat)
   // 4. Float32 at offset 0, 4 (순수 Float32 UV)
   // 5. HalfFloat at offset 0, 2 (순수 HalfFloat UV)
+  // 지원 레이아웃 후보군
+  // Primary UV(TEXCOORD0)는 DirectX/XXMI 표준에서 언제나 버텍스 Color(4B) 바로 뒤 오프셋 4에 위치하거나,
+  // Color가 생략된 경우 버텍스 시작 오프셋 0에 위치합니다.
+  // 오프셋 16 등은 Secondary UV(라이트맵/AO)이므로 Primary가 유효하지 않을 때의 폴백으로 평가합니다.
   const candidateConfigs = [
-    { type: 'half', offsetU: 16, offsetV: 18, minStride: 20, preferredStrides: [24] },
-    { type: 'float', offsetU: 4, offsetV: 8, minStride: 12, preferredStrides: [20, 12] },
-    { type: 'half', offsetU: 4, offsetV: 6, minStride: 8, preferredStrides: [24, 16] },
-    { type: 'float', offsetU: 0, offsetV: 4, minStride: 8, preferredStrides: [8] },
-    { type: 'half', offsetU: 0, offsetV: 2, minStride: 4, preferredStrides: [4] },
-    { type: 'float', offsetU: 8, offsetV: 12, minStride: 16, preferredStrides: [] },
+    { type: 'half', offsetU: 4, offsetV: 6, minStride: 8, preferredStrides: [24, 16], priorityBonus: 20 },
+    { type: 'float', offsetU: 4, offsetV: 8, minStride: 12, preferredStrides: [20, 12], priorityBonus: 20 },
+    { type: 'float', offsetU: 0, offsetV: 4, minStride: 8, preferredStrides: [8], priorityBonus: 15 },
+    { type: 'half', offsetU: 0, offsetV: 2, minStride: 4, preferredStrides: [4], priorityBonus: 15 },
+    { type: 'half', offsetU: 16, offsetV: 18, minStride: 20, preferredStrides: [], priorityBonus: 0 },
+    { type: 'float', offsetU: 8, offsetV: 12, minStride: 16, preferredStrides: [], priorityBonus: 0 },
   ];
 
   // 버퍼 전체에 걸쳐 균등 분산된 최대 64개 버텍스 샘플링
@@ -176,10 +180,11 @@ export function parseTexcoordBuffer(bytes, stride = 20, vertexCount = 0) {
     const rangeV = maxV - minV;
 
     let score = validCount * 2;
-    score += Math.min(rangeU, 1.0) * 20;
-    score += Math.min(rangeV, 1.0) * 20;
-    score += Math.min(stdU, 0.5) * 40;
-    score += Math.min(stdV, 0.5) * 40;
+    score += Math.min(rangeU, 1.0) * 10;
+    score += Math.min(rangeV, 1.0) * 10;
+    score += Math.min(stdU, 0.5) * 20;
+    score += Math.min(stdV, 0.5) * 20;
+    score += (cfg.priorityBonus || 0);
 
     // 스트라이드별 표준 관례 가산점
     if (cfg.preferredStrides && cfg.preferredStrides.includes(stride)) {
