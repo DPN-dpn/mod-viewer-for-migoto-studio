@@ -10,5 +10,6 @@
   "dependencies": {
     "texture-library": ">=1.0.0"
   },
-  "main": "index.js"
+  "main": "index.js",
+  "repository": "https://github.com/DPN-dpn/mod-viewer-for-migoto-studio"
 }
