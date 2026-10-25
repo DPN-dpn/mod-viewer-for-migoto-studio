@@ -142,6 +142,7 @@ export async function open3DViewerSubWindow(context) {
     height: 740,
     minWidth: 640,
     minHeight: 480,
+    maximized: true,
     resizable: true,
     focusMode: 'parentLinked',
     entry: 'subwindow.js',
@@ -151,6 +152,25 @@ export async function open3DViewerSubWindow(context) {
     },
     render(container, handle) {
       subWinContainerRef = container;
+
+      // 서브윈도우 기본값 최대화 상태 적용
+      requestAnimationFrame(() => {
+        try {
+          if (typeof handle?.maximize === 'function') {
+            handle.maximize();
+          } else if (typeof currentSubWin?.maximize === 'function') {
+            currentSubWin.maximize();
+          } else {
+            const winEl = container.closest?.('.sub-window, .subwindow, .floating-window, [class*="sub-window"], [class*="subwindow"]');
+            if (winEl && !winEl.classList.contains('maximized') && !winEl.classList.contains('is-maximized')) {
+              const maxBtn = winEl.querySelector?.('button[title*="최대화"], button[aria-label*="최대화"], .btn-maximize, .window-maximize, [class*="maximize"]');
+              maxBtn?.click?.();
+            }
+          }
+        } catch (e) {
+          // ignore
+        }
+      });
 
       // PiP에서 Dock In으로 복귀했을 때 이미 인스턴스가 살아있으면 최신 activeViewState를 즉시 적용
       if (container.__modViewerInstance) {
@@ -185,6 +205,15 @@ export async function open3DViewerSubWindow(context) {
   });
 
   activeSubWindow = currentSubWin;
+
+  // 서브 윈도우 생성 직후 최대화 호출
+  try {
+    if (typeof currentSubWin?.maximize === 'function') {
+      currentSubWin.maximize();
+    }
+  } catch (e) {
+    // ignore
+  }
 
   // 서브 윈도우 전용 이벤트 및 리소스 해제 함수
   function cleanupSubWindow() {
