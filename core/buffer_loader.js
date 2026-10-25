@@ -92,18 +92,18 @@ export function parseTexcoordBuffer(bytes, stride = 20, vertexCount = 0) {
   const dataView = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
 
   // 지원 레이아웃 후보군
-  // 1. Float32 at offset 4, 8 (Stride 20 등 - Pearl 계열)
-  // 2. HalfFloat at offset 4, 6 (Stride 24, 16 등 - Roxy 계열)
+  // 1. HalfFloat at offset 4, 6 (Stride 24, 16 등 - Roxy 계열 표준)
+  // 2. Float32 at offset 4, 8 (Stride 20, 12 등 - Pearl 계열 표준)
   // 3. Float32 at offset 0, 4 (순수 Float32 UV)
   // 4. HalfFloat at offset 0, 2 (순수 HalfFloat UV)
   const candidateConfigs = [
-    { type: 'float', offsetU: 4, offsetV: 8, minStride: 12 },
-    { type: 'half', offsetU: 4, offsetV: 6, minStride: 8 },
-    { type: 'float', offsetU: 0, offsetV: 4, minStride: 8 },
-    { type: 'half', offsetU: 0, offsetV: 2, minStride: 4 },
+    { type: 'half', offsetU: 4, offsetV: 6, minStride: 8, preferredStrides: [24, 16] },
+    { type: 'float', offsetU: 4, offsetV: 8, minStride: 12, preferredStrides: [20, 12] },
+    { type: 'float', offsetU: 0, offsetV: 4, minStride: 8, preferredStrides: [8] },
+    { type: 'half', offsetU: 0, offsetV: 2, minStride: 4, preferredStrides: [4] },
   ];
 
-  // 처음 16개 버텍스를 샘플링하여 0~1 (또는 -0.1~1.5) 범위 내 유효 점수 산출
+  // 처음 16개 버텍스를 샘플링하여 유효한 UV 좌표 점수 산출
   const sampleCount = Math.min(count, 16);
   let bestConfig = candidateConfigs[0];
   let bestScore = -9999;
@@ -111,6 +111,11 @@ export function parseTexcoordBuffer(bytes, stride = 20, vertexCount = 0) {
   for (const cfg of candidateConfigs) {
     if (stride < cfg.minStride) continue;
     let score = 0;
+
+    // 해당 스트라이드에 특화된 포맷인 경우 기본 가산점 부여
+    if (cfg.preferredStrides && cfg.preferredStrides.includes(stride)) {
+      score += 15;
+    }
 
     for (let i = 0; i < sampleCount; i++) {
       const vOffset = i * stride;
@@ -123,16 +128,30 @@ export function parseTexcoordBuffer(bytes, stride = 20, vertexCount = 0) {
         v = dataView.getFloat32(vOffset + cfg.offsetV, true);
       }
 
-      if (!Number.isNaN(u) && !Number.isNaN(v) && Number.isFinite(u) && Number.isFinite(v)) {
-        if (u >= -0.05 && u <= 1.05 && v >= -0.05 && v <= 1.05) {
-          score += 2;
-        } else if (u >= -1.0 && u <= 2.0 && v >= -1.0 && v <= 2.0) {
-          score += 1;
-        } else {
-          score -= 5;
-        }
-      } else {
+      // 비정상 수치(NaN, Infinite) 즉시 감점
+      if (Number.isNaN(u) || Number.isNaN(v) || !Number.isFinite(u) || !Number.isFinite(v)) {
+        score -= 20;
+        continue;
+      }
+
+      // 비정상 극소수(Subnormal/garbage float): 0이 아닌데 0.0005 미만인 경우
+      // HalfFloat 바이트를 Float32로 오독했을 때 발생하는 전형적인 쓰레기 부동소수점 (e.g. 4.64E-14)
+      if ((Math.abs(u) > 0 && Math.abs(u) < 0.0005) || (Math.abs(v) > 0 && Math.abs(v) < 0.0005)) {
         score -= 10;
+        continue;
+      }
+
+      // 정상 범위를 크게 벗어난 값 감점
+      if (u < -0.1 || u > 1.5 || v < -0.1 || v > 1.5) {
+        score -= 10;
+        continue;
+      }
+
+      // 텍스처 좌표 정상 범위 가산점
+      if (u >= 0.01 && u <= 0.99 && v >= 0.01 && v <= 0.99) {
+        score += 3;
+      } else if (u >= -0.05 && u <= 1.05 && v >= -0.05 && v <= 1.05) {
+        score += 1;
       }
     }
 

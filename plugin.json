@@ -1,7 +1,7 @@
 {
   "id": "mod-3d-viewer",
   "name": "3D 모드 뷰어",
-  "version": "1.2.5",
+  "version": "1.2.6",
   "description": "열려있는 모드 폴더의 3D 모델 및 텍스처를 독립 서브창에서 시각화하고 실시간 토글을 제어합니다.",
   "author": "Migoto Studio",
   "icon": "🧊",
