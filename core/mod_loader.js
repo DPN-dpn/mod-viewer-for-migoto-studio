@@ -1,4 +1,4 @@
-/**
+﻿/**
  * core/mod_loader.js
  * 모드 디렉터리 내의 모든 INI 파일들을 순회 파싱하고,
  * 3DMigoto/XXMI .buf(바이너리) 및 .ib 버퍼, DDS/이미지 텍스처를 안전하게 해석/로드합니다.
@@ -288,72 +288,136 @@ export async function loadModData({ folder, context, viewer, onProgress, forceRe
           }
         }
 
-        // 1. 명시적 프로퍼티(vb0, ib, vb1, ps-t0, ps-t1 등) 우선 조회
+        // 1. 명시적 프로퍼티(vb0, ib, vb1, diffuse, normal, ps-t0, ps-t1 등) 우선 조회
         if (ov.refs) {
           if (ov.refs.vb0 && resMap[ov.refs.vb0]) posRes = resMap[ov.refs.vb0];
           if (ov.refs.ib && resMap[ov.refs.ib]) ibRes = resMap[ov.refs.ib];
           if (ov.refs.vb1 && resMap[ov.refs.vb1]) tcRes = resMap[ov.refs.vb1];
+          if (!diffRes && ov.refs.diffuse && resMap[ov.refs.diffuse]) diffRes = resMap[ov.refs.diffuse];
           if (!diffRes && ov.refs['ps-t0'] && resMap[ov.refs['ps-t0']]) diffRes = resMap[ov.refs['ps-t0']];
+          if (!normRes && ov.refs.normal && resMap[ov.refs.normal]) normRes = resMap[ov.refs.normal];
           if (!normRes && ov.refs['ps-t1'] && resMap[ov.refs['ps-t1']]) normRes = resMap[ov.refs['ps-t1']];
         }
 
-        // 2. 섹션 이름 핵심 키워드 및 공통 캐릭터 접두사 매칭
+        // 8자리 16진수 해시 추출 헬퍼 (구분자 사이 또는 Resource 뒤)
+        const extractHexHash = (str) => {
+          if (!str || typeof str !== 'string') return null;
+          const m = str.match(/(?:^|[_ \-\/\.])([0-9a-fA-F]{8})(?:[_ \-\/\.]|$)/) ||
+                    str.replace(/^resource/i, '').match(/^([0-9a-fA-F]{8})/i);
+          return m ? m[1].toLowerCase() : null;
+        };
+
+        const ovHash = ov.hash || extractHexHash(ov.section) || extractHexHash(ov.refs?.ib);
+
+        // 2. 고유 해시(8자리 Hex) 기반 정확 매칭 (컴포넌트 간 버퍼 뒤섞임 100% 방지)
+        if (ovHash) {
+          for (const rKey of Object.keys(resMap)) {
+            const r = resMap[rKey];
+            const lowerKey = rKey.toLowerCase();
+            const lowerFile = (r.filename || '').toLowerCase();
+            const isHashMatch = lowerKey.includes(ovHash) || lowerFile.includes(ovHash);
+
+            if (isHashMatch) {
+              if (!posRes && (lowerKey.includes('position') || lowerFile.includes('position'))) {
+                posRes = r;
+              }
+              if (!tcRes && (lowerKey.includes('texcoord') || lowerFile.includes('texcoord'))) {
+                tcRes = r;
+              }
+              if (!ibRes && (lowerKey.includes('component') || lowerKey.includes('ib') || lowerFile.includes('.ib') || lowerFile.includes('component'))) {
+                ibRes = r;
+              }
+              if (!diffRes && (lowerKey.includes('diffuse') || lowerFile.includes('diffuse'))) {
+                diffRes = r;
+              }
+              if (!normRes && (lowerKey.includes('normal') || lowerFile.includes('normal'))) {
+                normRes = r;
+              }
+            }
+          }
+        }
+
+        // 3. 섹션 이름 핵심 키워드 매칭 (해시가 없거나 미매칭된 항목)
         const secBase = ov.section.replace(/^TextureOverride/i, '').toLowerCase();
-        const commonPrefix = secBase.replace(/[a-z0-9]$/i, '');
+        const secTokens = secBase.split(/[_ \-\/\.]+/).filter((t) => t.length >= 3 && !['textureoverride', 'ib', 'vb', 'component'].includes(t));
 
         for (const rKey of Object.keys(resMap)) {
           const r = resMap[rKey];
           const lowerKey = rKey.toLowerCase();
           const lowerFile = (r.filename || '').toLowerCase();
-          const isDirectMatch = lowerKey.includes(secBase) || secBase.includes(lowerKey.replace(/^resource/i, ''));
-          const isPrefixMatch = commonPrefix.length >= 4 && (lowerKey.includes(commonPrefix) || lowerFile.includes(commonPrefix));
+          const rHash = extractHexHash(lowerFile) || extractHexHash(lowerKey);
 
-          if (!posRes && (isDirectMatch || isPrefixMatch) && (lowerKey.includes('position') || lowerFile.includes('position'))) {
+          // 다른 컴포넌트의 명시적 해시가 붙어있는 리소스는 오염 방지를 위해 매칭 제외
+          if (ovHash && rHash && rHash !== ovHash) continue;
+
+          const isTokenMatch = secTokens.some((tok) => lowerKey.includes(tok) || lowerFile.includes(tok));
+
+          if (!posRes && isTokenMatch && (lowerKey.includes('position') || lowerFile.includes('position'))) {
             posRes = r;
           }
-          if (!tcRes && (isDirectMatch || isPrefixMatch) && (lowerKey.includes('texcoord') || lowerFile.includes('texcoord'))) {
+          if (!tcRes && isTokenMatch && (lowerKey.includes('texcoord') || lowerFile.includes('texcoord'))) {
             tcRes = r;
           }
-          if (!ibRes && (isDirectMatch || isPrefixMatch) && (lowerKey.includes('ib') || lowerFile.endsWith('.ib'))) {
+          if (!ibRes && isTokenMatch && (lowerKey.includes('ib') || lowerFile.endsWith('.ib') || lowerFile.includes('component'))) {
             ibRes = r;
           }
-          if (!diffRes && (isDirectMatch || isPrefixMatch) && (lowerKey.includes('diffuse') || lowerFile.includes('diffuse'))) {
+          if (!diffRes && isTokenMatch && (lowerKey.includes('diffuse') || lowerFile.includes('diffuse'))) {
             diffRes = r;
           }
-          if (!normRes && (isDirectMatch || isPrefixMatch) && (lowerKey.includes('normal') || lowerFile.includes('normal'))) {
+          if (!normRes && isTokenMatch && (lowerKey.includes('normal') || lowerFile.includes('normal'))) {
             normRes = r;
           }
         }
 
-        // 3. INI 파일 전체 공유 리소스 폴백
+        // 4. INI 파일 전체 공유 리소스 폴백 (단일 컴포넌트 모드용, 타 컴포넌트 해시 제외)
         if (!posRes) {
-          posRes = Object.values(resMap).find((r) => (r.name || '').toLowerCase().includes('position') || (r.filename || '').toLowerCase().includes('position'));
+          posRes = Object.values(resMap).find((r) => {
+            const h = extractHexHash(r.filename) || extractHexHash(r.name);
+            if (ovHash && h && h !== ovHash) return false;
+            return (r.name || '').toLowerCase().includes('position') || (r.filename || '').toLowerCase().includes('position');
+          });
         }
         if (!tcRes) {
-          tcRes = Object.values(resMap).find((r) => (r.name || '').toLowerCase().includes('texcoord') || (r.filename || '').toLowerCase().includes('texcoord'));
+          tcRes = Object.values(resMap).find((r) => {
+            const h = extractHexHash(r.filename) || extractHexHash(r.name);
+            if (ovHash && h && h !== ovHash) return false;
+            return (r.name || '').toLowerCase().includes('texcoord') || (r.filename || '').toLowerCase().includes('texcoord');
+          });
         }
         if (!ibRes) {
-          ibRes = Object.values(resMap).find((r) => (r.name || '').toLowerCase().endsWith('ib') || (r.filename || '').toLowerCase().endsWith('.ib'));
+          ibRes = Object.values(resMap).find((r) => {
+            const h = extractHexHash(r.filename) || extractHexHash(r.name);
+            if (ovHash && h && h !== ovHash) return false;
+            return (r.name || '').toLowerCase().endsWith('ib') || (r.filename || '').toLowerCase().endsWith('.ib') || (r.filename || '').toLowerCase().includes('component');
+          });
         }
 
-        // 4. 폴백: INI 디렉터리 내 실제 파일(allFiles)에서 검색
+        // 5. 폴백: INI 디렉터리 내 실제 파일(allFiles)에서 검색
         if (!posRes) {
-          const p = Array.from(allFiles.values()).find((f) => f.startsWith(ini.dir) && f.toLowerCase().includes(secBase) && f.toLowerCase().includes('position')) ||
-                    Array.from(allFiles.values()).find((f) => f.startsWith(ini.dir) && f.toLowerCase().includes('position')) ||
-                    Array.from(allFiles.values()).find((f) => f.toLowerCase().includes('position'));
+          const p = Array.from(allFiles.values()).find((f) => {
+            const lower = f.toLowerCase();
+            if (ovHash && !lower.includes(ovHash)) return false;
+            return f.startsWith(ini.dir) && lower.includes('position');
+          });
           if (p) posRes = { filename: p.split('/').pop(), stride: 40 };
         }
         if (!tcRes) {
-          const p = Array.from(allFiles.values()).find((f) => f.startsWith(ini.dir) && f.toLowerCase().includes(secBase) && f.toLowerCase().includes('texcoord')) ||
-                    Array.from(allFiles.values()).find((f) => f.startsWith(ini.dir) && f.toLowerCase().includes('texcoord')) ||
-                    Array.from(allFiles.values()).find((f) => f.toLowerCase().includes('texcoord'));
+          const p = Array.from(allFiles.values()).find((f) => {
+            const lower = f.toLowerCase();
+            if (ovHash && !lower.includes(ovHash)) return false;
+            return f.startsWith(ini.dir) && lower.includes('texcoord');
+          });
           if (p) tcRes = { filename: p.split('/').pop(), stride: 20 };
         }
         if (!ibRes) {
-          const p = Array.from(allFiles.values()).find((f) => f.startsWith(ini.dir) && f.toLowerCase().includes(secBase) && f.toLowerCase().endsWith('.ib')) ||
-                    Array.from(allFiles.values()).find((f) => f.startsWith(ini.dir) && f.toLowerCase().endsWith('.ib'));
+          const p = Array.from(allFiles.values()).find((f) => {
+            const lower = f.toLowerCase();
+            if (ovHash && !lower.includes(ovHash)) return false;
+            return f.startsWith(ini.dir) && (lower.endsWith('.ib') || lower.includes('component'));
+          });
           if (p) ibRes = { filename: p.split('/').pop(), format: 'DXGI_FORMAT_R32_UINT' };
         }
+
 
         if (!posRes || !ibRes) {
           context.logger?.debug(`[${ini.name}] ${ov.section}에 해당하는 Position 또는 IB 버퍼가 없어 건너뜁니다.`);

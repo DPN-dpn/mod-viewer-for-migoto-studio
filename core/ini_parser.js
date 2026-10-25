@@ -106,11 +106,18 @@ export function parseModIni(iniContent) {
     if (secLower.startsWith('textureoverride')) {
       const overrideObj = {
         section: sec.name,
+        hash: null,
         matchFirstIndex: 0,
         matchIndexCount: 0,
         refs: {}, // ib, vb0, vb1, vb2, ps-t0 등 참조 리소스 이름
         parts: [],
       };
+
+      // 섹션 이름에서 8자리 16진수 해시 자동 추출
+      const secHashMatch = sec.name.match(/(?:^|[_ \-\/\.])([0-9a-fA-F]{8})(?:[_ \-\/\.]|$)/);
+      if (secHashMatch) {
+        overrideObj.hash = secHashMatch[1].toLowerCase();
+      }
 
       let activeIfCondition = null;
       let partComment = '';
@@ -126,12 +133,29 @@ export function parseModIni(iniContent) {
           partComment = lineObj.comment;
         }
 
-        // 키=값 프로퍼티 추출 (ib, vb0, vb1, vb2, ps-t0 등)
-        const eqMatch = txt.match(/^([\w\-]+)\s*=\s*(.+)$/);
+        // hash = xxxxxxxx 프로퍼티 추출
+        const hashMatch = txt.match(/^hash\s*=\s*([0-9a-fA-F]{8})/i);
+        if (hashMatch) {
+          overrideObj.hash = hashMatch[1].toLowerCase();
+        }
+
+        // 키=값 프로퍼티 추출 (ib, vb0, vb1, vb2, ps-t0, Resource\ZZMI\Diffuse 등)
+        const eqMatch = txt.match(/^([a-zA-Z0-9_\-\\\/\.]+)\s*=\s*(?:ref\s+)?(.+)$/i);
         if (eqMatch) {
-          const propKey = eqMatch[1].trim().toLowerCase();
+          const rawKey = eqMatch[1].trim().toLowerCase();
           const propVal = eqMatch[2].trim();
-          overrideObj.refs[propKey] = propVal;
+          overrideObj.refs[rawKey] = propVal;
+
+          // ZZMI/호요버스 스타일 키 정규화
+          if (rawKey.includes('diffuse')) {
+            overrideObj.refs['diffuse'] = propVal;
+          } else if (rawKey.includes('normal')) {
+            overrideObj.refs['normal'] = propVal;
+          } else if (rawKey.includes('lightmap')) {
+            overrideObj.refs['lightmap'] = propVal;
+          } else if (rawKey.includes('materialmap')) {
+            overrideObj.refs['materialmap'] = propVal;
+          }
         }
 
         // match_first_index / match_index_count
