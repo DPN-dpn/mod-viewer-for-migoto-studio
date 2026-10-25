@@ -1,8 +1,8 @@
-/**
+﻿/**
  * core/dds_decoder.js
  * Migoto Studio 내장 플러그인 'texture-library' (>=1.0.0)의 decodeDDS API를 호출하여
  * DDS 텍스처(BC1~BC7, sRGB/Linear)를 Three.js DataTexture로 변환합니다.
- * 자체 디코딩 코드를 중복 포함하지 않고 texture-library 플러그인에 종속성을 가집니다.
+ * 자체 디코더 코드를 중복 포함하지 않고 texture-library 플러그인의 종속성을 가집니다.
  */
 
 import * as THREE from '../libs/three.module.js';
@@ -69,16 +69,16 @@ export function parseDdsTexture(buffer, contextOrRenderer = null, maybeRenderer 
   }
 
   try {
-    // 1. 종속성 플러그인 'texture-library'의 공개 API 조회
+    // 1. 종속된 플러그인 'texture-library'의 공개 API 조회
     const texLib = context?.plugins?.getPluginApi?.('texture-library');
 
     if (!texLib || typeof texLib.decodeDDS !== 'function') {
-      context?.logger?.warn('[3D 뷰어] 종속성 플러그인 "texture-library" (>=1.0.0)가 활성화되어 있지 않거나 decodeDDS API를 찾을 수 없습니다.');
+      context?.logger?.warn('[3D 뷰어] 종속된 플러그인 "texture-library" (>=1.0.0)가 활성화되어 있지 않거나 decodeDDS API를 찾을 수 없습니다.');
       return createFallbackTexture(512, 512);
     }
 
     // 2. texture-library의 디코더 호출 (BC1~BC7, DX10, sRGB/Linear 판별 지원)
-    const decoded = texLib.decodeDDS(buffer);
+    const decoded = texLib.decodeDDS(buffer, { ignoreAlpha: true });
     if (!decoded || !decoded.rgba || !decoded.width || !decoded.height) {
       context?.logger?.warn('[3D 뷰어] texture-library를 통한 DDS 디코딩 결과가 올바르지 않습니다.');
       return createFallbackTexture(512, 512);
@@ -93,7 +93,6 @@ export function parseDdsTexture(buffer, contextOrRenderer = null, maybeRenderer 
     const { rgba, width, height } = downsampleIfNeeded(decoded.rgba, decoded.width, decoded.height, maxTextureSize);
 
     // 5. Three.js CanvasTexture 생성
-    // (DataTexture 대신 브라우저 네이티브 Canvas2D 파이프라인을 거쳐 WebGL 흑화 및 밉맵 불완전 결함을 100% 방지)
     const canvas = document.createElement('canvas');
     canvas.width = width;
     canvas.height = height;
@@ -101,13 +100,12 @@ export function parseDdsTexture(buffer, contextOrRenderer = null, maybeRenderer 
 
     const clamped = rgba instanceof Uint8ClampedArray ? rgba : new Uint8ClampedArray(rgba.buffer, rgba.byteOffset, rgba.byteLength);
 
-    // 디퓨즈 텍스처의 알파 채널이 0(스펙큘러/글로우 마스크용)으로 저장된 경우 모델이 완전 검은색으로 렌더링되는 현상 원천 차단
-    if (!options.isNormal) {
-      for (let i = 3; i < clamped.length; i += 4) {
-        if (clamped[i] === 0) {
-          clamped[i] = 255;
-        }
-      }
+    // 알파 채널 무시 (모든 픽셀 완전 불투명 처리):
+    // 3DMigoto 모드에서는 알파 채널을 스펙큘러, 글로우, 디졸브, 투명도 마스크 등으로 사용하는 경우가 많아
+    // 알파를 그대로 두면 모델 파츠가 투명해지거나 부분적으로 보이지 않는 문제가 발생함.
+    // 모든 픽셀의 알파를 255로 강제하여 텍스처 내용이 온전히 보이도록 함.
+    for (let i = 3; i < clamped.length; i += 4) {
+      clamped[i] = 255;
     }
 
     const imgData = new ImageData(clamped, width, height);
@@ -120,11 +118,11 @@ export function parseDdsTexture(buffer, contextOrRenderer = null, maybeRenderer 
     texture.minFilter = THREE.LinearMipmapLinearFilter;
     texture.generateMipmaps = true;
 
-    // 저장 방식에 따른 sRGB vs Linear 색공간 정확한 적용
+    // 대역 방식에 따른 sRGB vs Linear 색공간 정확히 적용
     texture.colorSpace = isSRGB ? THREE.SRGBColorSpace : THREE.LinearSRGBColorSpace;
     texture.needsUpdate = true;
 
-    context?.logger?.info(`[3D 뷰어] DDS 텍스처 적용 완료: ${width}x${height} (${decoded.format}), sRGB: ${isSRGB}, 픽셀[0]: rgba(${clamped[0]}, ${clamped[1]}, ${clamped[2]}, ${clamped[3]})`);
+    context?.logger?.info(`[3D 뷰어] DDS 텍스처 적용 완료 (알파 무시): ${width}x${height} (${decoded.format}), sRGB: ${isSRGB}`);
 
     return texture;
   } catch (err) {
@@ -134,7 +132,7 @@ export function parseDdsTexture(buffer, contextOrRenderer = null, maybeRenderer 
 }
 
 /**
- * 일반 이미지 (JPG, PNG) 바이너리를 Three.js Texture로 비동기 변환
+ * 일반 이미지 (JPG, PNG) 바이너리를 Three.js Texture로 비동기 변환 (알파 무시)
  * @param {Uint8Array} buffer
  * @param {string} mimeType
  * @param {boolean} [isSRGB=true]
@@ -148,7 +146,25 @@ export async function loadImageTexture(buffer, mimeType = 'image/jpeg', isSRGB =
 
     img.onload = () => {
       URL.revokeObjectURL(url);
-      const texture = new THREE.Texture(img);
+      const canvas = document.createElement('canvas');
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0);
+
+      // 알파 채널 무시: 모든 픽셀 완전 불투명(255) 처리
+      try {
+        const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const data = imgData.data;
+        for (let i = 3; i < data.length; i += 4) {
+          data[i] = 255;
+        }
+        ctx.putImageData(imgData, 0, 0);
+      } catch (e) {
+        // ImageData 변환 실패 시 캔버스 원본 유지
+      }
+
+      const texture = new THREE.CanvasTexture(canvas);
       texture.wrapS = THREE.RepeatWrapping;
       texture.wrapT = THREE.RepeatWrapping;
       texture.magFilter = THREE.LinearFilter;

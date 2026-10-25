@@ -164,6 +164,8 @@ export class ModViewer3D {
         metalness: 0.05,
         side: THREE.DoubleSide,
         wireframe: this.isWireframe,
+        transparent: false,
+        opacity: 1.0,
         map: diffuseTexture || null,
         normalMap: normalTexture || null,
       });
@@ -254,6 +256,8 @@ export class ModViewer3D {
 
       if (match && item.mesh?.material) {
         item.mesh.material.map = texture || null;
+        item.mesh.material.transparent = false;
+        item.mesh.material.opacity = 1.0;
         item.mesh.material.needsUpdate = true;
         item.customTextureFile = textureFile;
       }
