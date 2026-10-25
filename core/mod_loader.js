@@ -527,10 +527,12 @@ export async function loadModData({ folder, context, viewer, onProgress, forceRe
           });
 
           for (const pt of ov.parts) {
+            pt.iniName = ini.name;
             iniParts.push({
               ...pt,
               id: pt.id || `${ov.section}_${pt.name}`,
               sectionName: ov.section,
+              iniName: ini.name,
               textureFile: diffRes?.filename || null,
               slot: matchedSlot ? { part: matchedSlot.part, partName: matchedSlot.partName } : null,
               name: `[${ini.name.replace(/\.ini$/i, '')}] ${pt.name}`,

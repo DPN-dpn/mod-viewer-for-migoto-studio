@@ -144,16 +144,32 @@ export function parseDdsTexture(buffer, contextOrRenderer = null, maybeRenderer 
     const maxTextureSize = gl ? gl.getParameter(gl.MAX_TEXTURE_SIZE) || 4096 : 4096;
     const { rgba, width, height } = downsampleIfNeeded(decoded.rgba, decoded.width, decoded.height, maxTextureSize);
 
-    // 5. 고속 DataTexture 직접 바인딩 (Canvas 2D 생성 및 putImageData 메모리 2중 복사/루프 제거)
-    const uint8 = (rgba instanceof Uint8Array && rgba.constructor === Uint8Array)
+    // 5. Canvas 2D 기반 CanvasTexture 생성 (알파 무시 255 불투명 보장 및 WebGL 완벽 호환)
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+
+    const clamped = (rgba instanceof Uint8ClampedArray)
       ? rgba
-      : new Uint8Array(rgba.buffer, rgba.byteOffset, rgba.byteLength);
+      : new Uint8ClampedArray(rgba.buffer, rgba.byteOffset, rgba.byteLength);
 
     if (options.isNormal) {
-      reconstructNormalZIfNeeded(uint8, true);
+      reconstructNormalZIfNeeded(clamped, true);
     }
 
-    const texture = new THREE.DataTexture(uint8, width, height, THREE.RGBAFormat);
+    // 알파 채널 무시 (모든 픽셀 완전 불투명 처리):
+    // 3DMigoto 모드에서는 알파 채널을 스펙큘러, 글로우, 디졸브, 투명도 마스크 등으로 사용하는 경우가 많아
+    // 알파를 그대로 두면 모델 파츠가 투명해지거나 부분적으로 보이지 않는 문제가 발생함.
+    // 모든 픽셀의 알파를 255로 강제하여 텍스처 내용이 온전히 보이도록 함.
+    for (let i = 3; i < clamped.length; i += 4) {
+      clamped[i] = 255;
+    }
+
+    const imgData = new ImageData(clamped, width, height);
+    ctx.putImageData(imgData, 0, 0);
+
+    const texture = new THREE.CanvasTexture(canvas);
     texture.wrapS = THREE.RepeatWrapping;
     texture.wrapT = THREE.RepeatWrapping;
     texture.magFilter = THREE.LinearFilter;
@@ -195,15 +211,23 @@ export async function loadImageTexture(buffer, mimeType = 'image/jpeg', isSRGB =
       const ctx = canvas.getContext('2d');
       ctx.drawImage(img, 0, 0);
 
-      // 노말맵인 경우에만 Z 복원 처리 (일반 이미지는 무거운 getImageData/putImageData 생략하여 즉시 로드)
-      if (isNormal) {
-        try {
-          const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-          reconstructNormalZIfNeeded(imgData.data, true);
-          ctx.putImageData(imgData, 0, 0);
-        } catch (e) {
-          // ImageData 변환 실패 시 캔버스 원본 유지
+      try {
+        const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const data = imgData.data;
+
+        // 2채널 노말맵 복원
+        if (isNormal) {
+          reconstructNormalZIfNeeded(data, true);
         }
+
+        // 알파 채널 무시: 모든 픽셀 완전 불투명(255) 처리
+        for (let i = 3; i < data.length; i += 4) {
+          data[i] = 255;
+        }
+
+        ctx.putImageData(imgData, 0, 0);
+      } catch (e) {
+        // ImageData 변환 실패 시 캔버스 원본 유지
       }
 
       const texture = new THREE.CanvasTexture(canvas);

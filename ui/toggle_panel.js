@@ -30,6 +30,7 @@ export class TogglePanel {
     this.context = context;
     this.varSourceIni = varSourceIni || {};
     this.currentValues = { ...this.constants };
+    this.enabledInis = null;
 
     this.render();
   }
@@ -73,8 +74,9 @@ export class TogglePanel {
     partsHeader.className = 'panel-section-title';
     partsHeader.innerHTML = `
       <span class="icon">🧩</span>
-      <span>메쉬 파츠 목록 (${this.parts.length}개)</span>
+      <span class="parts-header-text">메쉬 파츠 목록 (${this.parts.length}개)</span>
     `;
+    this.partsHeaderTitle = partsHeader.querySelector('.parts-header-text');
 
     this.partsListContainer = document.createElement('div');
     this.partsListContainer.className = 'parts-list-container';
@@ -117,6 +119,11 @@ export class TogglePanel {
     const row = document.createElement('div');
     row.className = 'var-control-card';
 
+    const sourceIni = this.varSourceIni?.[varName];
+    if (sourceIni) {
+      row.dataset.ini = sourceIni.replace(/\.ini$/i, '').toLowerCase();
+    }
+
     const header = document.createElement('div');
     header.className = 'var-header';
 
@@ -125,7 +132,6 @@ export class TogglePanel {
     label.textContent = varName;
     header.appendChild(label);
 
-    const sourceIni = this.varSourceIni?.[varName];
     if (sourceIni) {
       const iniBadge = document.createElement('span');
       iniBadge.className = 'var-ini-badge';
@@ -215,6 +221,12 @@ export class TogglePanel {
 
       const item = document.createElement('div');
       item.className = `part-item ${isVisible ? 'visible' : 'hidden'}`;
+      if (part.iniName) {
+        item.dataset.ini = part.iniName.replace(/\.ini$/i, '').toLowerCase();
+      }
+      if (this.enabledInis && item.dataset.ini && !this.enabledInis.has(item.dataset.ini)) {
+        item.style.display = 'none';
+      }
 
       const rowMain = document.createElement('div');
       rowMain.className = 'part-row-main';
@@ -316,6 +328,40 @@ export class TogglePanel {
       return fn();
     } catch {
       return true;
+    }
+  }
+
+  /**
+   * 활성화된 INI 목록에 맞춰 토글 변수 및 파츠 UI를 즉시 필터링 (DOM 재생성 없음)
+   * @param {string[] | Set<string> | null} enabledInis
+   */
+  setEnabledInis(enabledInis) {
+    this.enabledInis = enabledInis
+      ? new Set(Array.from(enabledInis).map((s) => s.replace(/\.ini$/i, '').toLowerCase()))
+      : null;
+
+    // 변수 컨트롤 카드 가시성 조정
+    const varCards = this.container.querySelectorAll('.var-control-card');
+    let visibleVarCount = 0;
+    varCards.forEach((card) => {
+      const ini = card.dataset.ini;
+      const show = !this.enabledInis || !ini || this.enabledInis.has(ini);
+      card.style.display = show ? '' : 'none';
+      if (show) visibleVarCount++;
+    });
+
+    // 파츠 아이템 가시성 조정
+    const partItems = this.container.querySelectorAll('.part-item');
+    let visiblePartCount = 0;
+    partItems.forEach((item) => {
+      const ini = item.dataset.ini;
+      const show = !this.enabledInis || !ini || this.enabledInis.has(ini);
+      item.style.display = show ? '' : 'none';
+      if (show) visiblePartCount++;
+    });
+
+    if (this.partsHeaderTitle) {
+      this.partsHeaderTitle.textContent = `메쉬 파츠 목록 (${visiblePartCount}개)`;
     }
   }
 

@@ -45,6 +45,7 @@ export function render3DViewer(container, context, initialFolder, onFolderChange
   let currentFolder = initialFolder || getActiveModFolder(context) || null;
   let loadedFolder = null;
   let isLoading = false;
+  let isModelInitialized = false;
   let activeTogglePanel = null;
   let currentEntries = [];
   let currentDetectedTextures = [];
@@ -304,6 +305,7 @@ export function render3DViewer(container, context, initialFolder, onFolderChange
     currentEntries = [];
     currentFolder = null;
     loadedFolder = null;
+    isModelInitialized = false;
     currentViewState.variables = {};
     currentViewState.selectedInis = {};
     currentViewState.camera = null;
@@ -339,43 +341,33 @@ export function render3DViewer(container, context, initialFolder, onFolderChange
 
   /**
    * 선택된 INI 파일들의 컴포넌트/파츠/변수를 뷰어 및 사이드바에 적용
+   * 비활성화 시 메모리에서 파괴하지 않고 visibility만 즉시 토글하여 버벅임을 100% 제거합니다.
    */
   function applyFilteredInis() {
     const folderName = (currentFolder && typeof currentFolder === 'string')
       ? currentFolder.split('/').pop()
       : '모드';
     const enabledEntries = currentEntries.filter((e) => e.enabled);
+    const enabledIniNames = new Set(enabledEntries.map((e) => e.name));
 
-    if (enabledEntries.length === 0) {
-      viewer.clearModel();
-      statusbar.setValue('file', `${folderName} (선택된 INI 없음)`);
-      statusbar.setValue('vertex', '0');
-      statusbar.setValue('tris', '0');
-      statusbar.setValue('parts', '0');
-      sidebar.innerHTML = `
-        <div style="padding: 24px; color: #94a3b8; font-size: 13px; text-align: center; line-height: 1.6;">
-          ⚠️ <b>반영할 INI 파일이 선택되지 않았습니다.</b><br>
-          <span style="font-size: 12px; color: #64748b;">좌측 상단의 모드 드롭다운 버튼을 눌러 원하는 INI 파일을 체크하세요.</span>
-        </div>
-      `;
-      return;
-    }
+    // 1. 모든 INI의 전체 컴포넌트 및 파츠 수집
+    const allComponents = [];
+    const allParts = [];
+    const allConstants = {};
+    const allKeyBindings = {};
+    const varSourceIni = {};
 
-    // 1. 현재 활성화된 INI들에 실제로 속한 변수 키 목록 및 INI 소속 맵 수집
-    const enabledVarNames = new Set();
-    const varSourceIni = {}; // varName -> iniName
-
-    for (const entry of enabledEntries) {
+    for (const entry of currentEntries) {
       const cleanIniName = entry.name.replace(/\.ini$/i, '');
       if (entry.constants) {
-        for (const k of Object.keys(entry.constants)) {
-          enabledVarNames.add(k);
+        for (const [k, v] of Object.entries(entry.constants)) {
+          allConstants[k] = v;
           if (!varSourceIni[k]) varSourceIni[k] = cleanIniName;
         }
       }
       if (entry.keyBindings) {
-        for (const k of Object.keys(entry.keyBindings)) {
-          enabledVarNames.add(k);
+        for (const [k, v] of Object.entries(entry.keyBindings)) {
+          allKeyBindings[k] = v;
           if (!varSourceIni[k]) varSourceIni[k] = cleanIniName;
         }
       }
@@ -386,118 +378,112 @@ export function render3DViewer(container, context, initialFolder, onFolderChange
             if (matches) {
               for (const m of matches) {
                 const lower = m.toLowerCase();
-                enabledVarNames.add(lower);
                 if (!varSourceIni[lower]) varSourceIni[lower] = cleanIniName;
               }
             }
           }
         }
       }
-    }
-
-    const mergedConstants = {};
-    const mergedKeyBindings = {};
-    const allComponents = [];
-    const allParts = [];
-    let totalVertexCount = 0;
-
-    for (const entry of enabledEntries) {
-      if (entry.constants) {
-        for (const [k, v] of Object.entries(entry.constants)) {
-          mergedConstants[k] = v;
-        }
-      }
-      if (entry.keyBindings) {
-        for (const [k, v] of Object.entries(entry.keyBindings)) {
-          mergedKeyBindings[k] = v;
-        }
-      }
       allComponents.push(...entry.components);
       allParts.push(...entry.parts);
-      totalVertexCount += entry.vertexCount;
     }
 
-    // 복원할 토글 변수값이 저장되어 있으면, '오직 현재 활성화된 INI에 속한 변수'만 병합 적용 (타 INI 변수 누출 차단)
+    // 복원할 토글 변수 병합
     if (currentViewState.variables && Object.keys(currentViewState.variables).length > 0) {
       for (const [k, v] of Object.entries(currentViewState.variables)) {
-        if (enabledVarNames.has(k)) {
-          mergedConstants[k] = v;
-        }
+        allConstants[k] = v;
       }
-      const filteredVars = {};
-      for (const [k, v] of Object.entries(currentViewState.variables)) {
-        if (enabledVarNames.has(k)) {
-          filteredVars[k] = v;
-        }
-      }
-      currentViewState.variables = filteredVars;
     }
 
-    if (allComponents.length === 0) {
-      viewer.clearModel();
-      sidebar.innerHTML = `
-        <div style="padding: 24px; color: #94a3b8; font-size: 13px; text-align: center; line-height: 1.6;">
-          선택된 INI 파일에 유효한 3D 메쉬 데이터가 없습니다.
-        </div>
-      `;
-      statusbar.setValue('file', `${folderName} (${enabledEntries.map((e) => e.name).join(', ')})`);
-      statusbar.setValue('vertex', '0');
-      statusbar.setValue('tris', '0');
-      statusbar.setValue('parts', '0');
-      return;
+    // 2. 모델이 아직 Three.js 씬에 로드되지 않았다면 최초 1회만 완전 로드 (지오메트리 & 머티리얼 인스턴싱)
+    if (!isModelInitialized && viewer) {
+      if (allComponents.length === 0) {
+        viewer.clearModel();
+        sidebar.innerHTML = `
+          <div style="padding: 24px; color: #94a3b8; font-size: 13px; text-align: center; line-height: 1.6;">
+            선택된 모드에 유효한 3D 메쉬 데이터가 없습니다.
+          </div>
+        `;
+        return;
+      }
+
+      viewer.setComponents(allComponents, allConstants, enabledIniNames);
+      isModelInitialized = true;
+
+      // 사이드바 TogglePanel 1회 초기화
+      if (activeTogglePanel) {
+        activeTogglePanel.destroy?.();
+        activeTogglePanel = null;
+      }
+
+      activeTogglePanel = new TogglePanel(sidebar, {
+        constants: allConstants,
+        keyBindings: allKeyBindings,
+        varSourceIni,
+        parts: allParts,
+        detectedTextures: currentDetectedTextures,
+        partTextures: currentViewState.customTextures || {},
+        context,
+        onChange: (updatedVars) => {
+          const { visibleTriangles, totalTriangles } = viewer.updateToggles(updatedVars);
+          statusbar.setValue('tris', `${visibleTriangles.toLocaleString()} / ${totalTriangles.toLocaleString()}`);
+          currentViewState.variables = { ...viewer.activeVariables };
+          saveAndNotifyViewState();
+        },
+        onTextureChange: async (part, chosenTextureFile) => {
+          await handlePartTextureChange(part, chosenTextureFile);
+        },
+      });
+
+      // 저장된 커스텀 텍스처 복원
+      if (currentViewState.customTextures && Object.keys(currentViewState.customTextures).length > 0) {
+        for (const part of allParts) {
+          const partKey = part.id || part.name;
+          const customTex = currentViewState.customTextures[partKey];
+          if (customTex) {
+            handlePartTextureChange(part, customTex, true);
+          }
+        }
+      }
+
+      // 카메라 시점 복원
+      if (currentViewState.camera) {
+        viewer.setCameraState(currentViewState.camera);
+      }
     }
 
-    viewer.setComponents(allComponents, mergedConstants);
+    // 3. 이미 로드된 상태에서는 INI 활성화 상태(visibility)만 초고속 즉시 토글 (메모리 해제 및 지오메트리 재생성 0회!)
+    const { visibleTriangles, totalTriangles } = viewer
+      ? viewer.setEnabledInis(enabledIniNames)
+      : { visibleTriangles: 0, totalTriangles: 0 };
 
-    statusbar.setValue('file', `${folderName} (${enabledEntries.map((e) => e.name).join(', ')})`);
-    statusbar.setValue('vertex', totalVertexCount.toLocaleString());
-    statusbar.setValue('parts', `${allParts.length}개`);
-
-    // 우측 토글 컨트롤 패널 바인딩 (파츠별 텍스처 변경 드롭다운 연동)
     if (activeTogglePanel) {
-      activeTogglePanel.destroy?.();
-      activeTogglePanel = null;
+      activeTogglePanel.setEnabledInis(enabledIniNames);
     }
 
-    activeTogglePanel = new TogglePanel(sidebar, {
-      constants: mergedConstants,
-      keyBindings: mergedKeyBindings,
-      varSourceIni,
-      parts: allParts,
-      detectedTextures: currentDetectedTextures,
-      partTextures: currentViewState.customTextures || {},
-      context,
-      onChange: (updatedVars) => {
-        const { visibleTriangles, totalTriangles } = viewer.updateToggles(updatedVars);
-        statusbar.setValue('tris', `${visibleTriangles.toLocaleString()} / ${totalTriangles.toLocaleString()}`);
-        currentViewState.variables = { ...viewer.activeVariables };
-        saveAndNotifyViewState();
-      },
-      onTextureChange: async (part, chosenTextureFile) => {
-        await handlePartTextureChange(part, chosenTextureFile);
-      },
-    });
+    // 4. 상태바 통계 갱신
+    let enabledVertexCount = 0;
+    let enabledPartsCount = 0;
+    for (const e of enabledEntries) {
+      enabledVertexCount += e.vertexCount;
+      enabledPartsCount += e.parts.length;
+    }
 
-    const { visibleTriangles, totalTriangles } = viewer.updateToggles(mergedConstants);
+    statusbar.setValue('file', enabledEntries.length > 0
+      ? `${folderName} (${enabledEntries.map((e) => e.name).join(', ')})`
+      : `${folderName} (선택된 INI 없음)`);
+    statusbar.setValue('vertex', enabledVertexCount.toLocaleString());
     statusbar.setValue('tris', `${visibleTriangles.toLocaleString()} / ${totalTriangles.toLocaleString()}`);
+    statusbar.setValue('parts', `${enabledPartsCount}개`);
 
-    // 저장된 파츠별 커스텀 텍스처 복원 적용
-    if (currentViewState.customTextures && Object.keys(currentViewState.customTextures).length > 0) {
-      for (const part of allParts) {
-        const partKey = part.id || part.name;
-        const customTex = currentViewState.customTextures[partKey];
-        if (customTex) {
-          handlePartTextureChange(part, customTex, true);
-        }
-      }
+    // selectedInis 뷰 상태 기록
+    const selMap = {};
+    for (const e of currentEntries) {
+      selMap[e.name] = e.enabled;
     }
+    currentViewState.selectedInis = selMap;
 
-    // 이전 카메라 시점 복원
-    if (currentViewState.camera) {
-      viewer.setCameraState(currentViewState.camera);
-    }
-
-    context.logger?.info(`[3D 뷰어] 선택된 ${enabledEntries.length}개 INI 즉시 반영 완료 (${allComponents.length}개 메쉬, ${allParts.length}개 파츠)`);
+    context.logger?.info(`[3D 뷰어] 선택된 ${enabledEntries.length}개 INI 즉시 가시성 전환 완료 (메모리 상주 유지)`);
   }
 
   /**
@@ -573,7 +559,8 @@ export function render3DViewer(container, context, initialFolder, onFolderChange
     const normalizedFolder = targetFolder.replace(/\\/g, '/');
 
     // 다른 모드 폴더로 전환 시 이전 모드의 변수/INI 선택/카메라가 새 모드로 새어 들어가지 않게 초기화
-    if (loadedFolder && normalizedFolder !== loadedFolder) {
+    if ((loadedFolder && normalizedFolder !== loadedFolder) || forceReload) {
+      isModelInitialized = false;
       if (activeTogglePanel) {
         activeTogglePanel.destroy?.();
         activeTogglePanel = null;

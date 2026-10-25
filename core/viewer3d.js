@@ -30,6 +30,7 @@ export class ModViewer3D {
     this.material = null;
     this.defaultTexture = null;
     this.activeVariables = {};
+    this.enabledInis = null;
 
     this.initScene();
     this.initLights();
@@ -146,12 +147,14 @@ export class ModViewer3D {
    * 다중 컴포넌트 모델 데이터 로드 (모든 INI에서 수집된 복수 메쉬들)
    * @param {Array<{ name: string, iniName: string, positions: Float32Array, uvs: Float32Array | null, indices: Uint32Array | Uint16Array, parts: Array, diffuseTexture: any, normalTexture: any }>} components
    * @param {Record<string, number>} [initialVariables]
+   * @param {string[] | Set<string> | null} [enabledInis=null]
    */
-  setComponents(components, initialVariables = {}) {
+  setComponents(components, initialVariables = {}, enabledInis = null) {
     // 기존 메쉬 정리
     this.clearModel();
 
     this.activeVariables = { ...initialVariables };
+    this.enabledInis = enabledInis ? new Set(enabledInis) : null;
 
     for (const comp of components) {
       const { name, iniName, positions, uvs, indices, parts, diffuseTexture, normalTexture } = comp;
@@ -214,6 +217,7 @@ export class ModViewer3D {
             id: part.id || `${iniName}_${part.name}`,
             info: part,
             mesh,
+            iniName: iniName || comp.iniName || null,
             customTextureFile: null,
           });
         }
@@ -233,6 +237,7 @@ export class ModViewer3D {
           id: name || 'Model',
           info: { name: name || 'Model', count: indices.length, firstIndex: 0 },
           mesh,
+          iniName: iniName || comp.iniName || null,
           customTextureFile: null,
         });
       }
@@ -365,22 +370,41 @@ export class ModViewer3D {
   }
 
   /**
+   * 활성화된 INI 목록 설정 (비활성화된 INI는 메모리에서 파괴하지 않고 숨김 처리)
+   * @param {string[] | Set<string> | null} enabledInis
+   * @returns {{ visibleTriangles: number, totalTriangles: number }}
+   */
+  setEnabledInis(enabledInis) {
+    this.enabledInis = enabledInis ? new Set(enabledInis) : null;
+    return this.updateToggles();
+  }
+
+  /**
    * 토글 변수 값 변경 시 파츠 가시성 실시간 갱신
-   * @param {Record<string, number>} variableValues
+   * @param {Record<string, number>} [variableValues]
    * @returns {{ visibleTriangles: number, totalTriangles: number }}
    */
   updateToggles(variableValues) {
-    this.activeVariables = { ...this.activeVariables, ...variableValues };
+    if (variableValues) {
+      this.activeVariables = { ...this.activeVariables, ...variableValues };
+    }
 
     let visibleTriangles = 0;
     let totalTriangles = 0;
 
     for (const item of this.partMeshes) {
-      const { info, mesh } = item;
+      const { info, mesh, iniName } = item;
       const count = info.count || 0;
-      totalTriangles += Math.floor(count / 3);
 
-      const isVisible = evaluateCondition(info.condition, this.activeVariables);
+      // 비활성화된 INI의 파츠는 씬에서 visible=false 처리 (메모리 상주 유지)
+      const isIniEnabled = !this.enabledInis || !iniName || this.enabledInis.has(iniName);
+
+      if (isIniEnabled) {
+        totalTriangles += Math.floor(count / 3);
+      }
+
+      const isConditionMet = evaluateCondition(info.condition, this.activeVariables);
+      const isVisible = isIniEnabled && isConditionMet;
       mesh.visible = isVisible;
 
       if (isVisible) {
