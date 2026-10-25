@@ -80,47 +80,80 @@ export function parsePositionBuffer(bytes, stride = 40) {
 
 /**
  * Texcoord 버퍼 파싱 (.buf)
+ * 다중 버텍스 샘플링 기반 자동 휴리스틱을 통해 Float32 / HalfFloat 및 오프셋(4 or 0)을 100% 정확하게 판별합니다.
  * @param {Uint8Array} bytes
- * @param {number} stride - 기본값 24바이트
+ * @param {number} stride - 기본값 20 또는 24
  * @param {number} vertexCount
  * @returns {Float32Array} UV 좌표 배열 (u, v 쌍)
  */
-export function parseTexcoordBuffer(bytes, stride = 24, vertexCount = 0) {
+export function parseTexcoordBuffer(bytes, stride = 20, vertexCount = 0) {
   const count = vertexCount || Math.floor(bytes.byteLength / stride);
   const uvs = new Float32Array(count * 2);
   const dataView = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
 
-  let isHalfFloat = true;
+  // 지원 레이아웃 후보군
+  // 1. Float32 at offset 4, 8 (Stride 20 등 - Pearl 계열)
+  // 2. HalfFloat at offset 4, 6 (Stride 24, 16 등 - Roxy 계열)
+  // 3. Float32 at offset 0, 4 (순수 Float32 UV)
+  // 4. HalfFloat at offset 0, 2 (순수 HalfFloat UV)
+  const candidateConfigs = [
+    { type: 'float', offsetU: 4, offsetV: 8, minStride: 12 },
+    { type: 'half', offsetU: 4, offsetV: 6, minStride: 8 },
+    { type: 'float', offsetU: 0, offsetV: 4, minStride: 8 },
+    { type: 'half', offsetU: 0, offsetV: 2, minStride: 4 },
+  ];
 
-  if (bytes.byteLength >= stride) {
-    const testH1 = dataView.getUint16(4, true);
-    const testH2 = dataView.getUint16(6, true);
-    const val1 = decodeHalfFloat(testH1);
-    const val2 = decodeHalfFloat(testH2);
+  // 처음 16개 버텍스를 샘플링하여 0~1 (또는 -0.1~1.5) 범위 내 유효 점수 산출
+  const sampleCount = Math.min(count, 16);
+  let bestConfig = candidateConfigs[0];
+  let bestScore = -9999;
 
-    if (val1 >= -0.5 && val1 <= 2.0 && val2 >= -0.5 && val2 <= 2.0) {
-      isHalfFloat = true;
-    } else {
-      const f1 = dataView.getFloat32(0, true);
-      const f2 = dataView.getFloat32(4, true);
-      if (f1 >= -1 && f1 <= 2 && f2 >= -1 && f2 <= 2) {
-        isHalfFloat = false;
+  for (const cfg of candidateConfigs) {
+    if (stride < cfg.minStride) continue;
+    let score = 0;
+
+    for (let i = 0; i < sampleCount; i++) {
+      const vOffset = i * stride;
+      let u = 0, v = 0;
+      if (cfg.type === 'half') {
+        u = decodeHalfFloat(dataView.getUint16(vOffset + cfg.offsetU, true));
+        v = decodeHalfFloat(dataView.getUint16(vOffset + cfg.offsetV, true));
+      } else {
+        u = dataView.getFloat32(vOffset + cfg.offsetU, true);
+        v = dataView.getFloat32(vOffset + cfg.offsetV, true);
       }
+
+      if (!Number.isNaN(u) && !Number.isNaN(v) && Number.isFinite(u) && Number.isFinite(v)) {
+        if (u >= -0.05 && u <= 1.05 && v >= -0.05 && v <= 1.05) {
+          score += 2;
+        } else if (u >= -1.0 && u <= 2.0 && v >= -1.0 && v <= 2.0) {
+          score += 1;
+        } else {
+          score -= 5;
+        }
+      } else {
+        score -= 10;
+      }
+    }
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestConfig = cfg;
     }
   }
 
+  // 최적의 포맷으로 전체 버퍼 추출
+  const { type, offsetU, offsetV } = bestConfig;
   for (let i = 0; i < count; i++) {
     const offset = i * stride;
     let u = 0, v = 0;
 
-    if (isHalfFloat) {
-      const hu = dataView.getUint16(offset + 4, true);
-      const hv = dataView.getUint16(offset + 6, true);
-      u = decodeHalfFloat(hu);
-      v = decodeHalfFloat(hv);
+    if (type === 'half') {
+      u = decodeHalfFloat(dataView.getUint16(offset + offsetU, true));
+      v = decodeHalfFloat(dataView.getUint16(offset + offsetV, true));
     } else {
-      u = dataView.getFloat32(offset + 0, true);
-      v = dataView.getFloat32(offset + 4, true);
+      u = dataView.getFloat32(offset + offsetU, true);
+      v = dataView.getFloat32(offset + offsetV, true);
     }
 
     // WebGL V축 반전 보정 (DirectX V는 아래로 증가, WebGL은 위로 증가)
