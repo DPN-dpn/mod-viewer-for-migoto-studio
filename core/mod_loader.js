@@ -288,134 +288,116 @@ export async function loadModData({ folder, context, viewer, onProgress, forceRe
           }
         }
 
-        // 1. 명시적 프로퍼티(vb0, ib, vb1, diffuse, normal, ps-t0, ps-t1 등) 우선 조회
-        if (ov.refs) {
-          if (ov.refs.vb0 && resMap[ov.refs.vb0]) posRes = resMap[ov.refs.vb0];
-          if (ov.refs.ib && resMap[ov.refs.ib]) ibRes = resMap[ov.refs.ib];
-          if (ov.refs.vb1 && resMap[ov.refs.vb1]) tcRes = resMap[ov.refs.vb1];
-          if (!diffRes && ov.refs.diffuse && resMap[ov.refs.diffuse]) diffRes = resMap[ov.refs.diffuse];
-          if (!diffRes && ov.refs['ps-t0'] && resMap[ov.refs['ps-t0']]) diffRes = resMap[ov.refs['ps-t0']];
-          if (!normRes && ov.refs.normal && resMap[ov.refs.normal]) normRes = resMap[ov.refs.normal];
-          if (!normRes && ov.refs['ps-t1'] && resMap[ov.refs['ps-t1']]) normRes = resMap[ov.refs['ps-t1']];
-        }
-
-        // 8자리 16진수 해시 추출 헬퍼 (구분자 사이 또는 Resource 뒤)
-        const extractHexHash = (str) => {
-          if (!str || typeof str !== 'string') return null;
-          const m = str.match(/(?:^|[_ \-\/\.])([0-9a-fA-F]{8})(?:[_ \-\/\.]|$)/) ||
-                    str.replace(/^resource/i, '').match(/^([0-9a-fA-F]{8})/i);
-          return m ? m[1].toLowerCase() : null;
+        // 1. 명시적 프로퍼티(vb0, ib, vb1, diffuse, normal, ps-t0, ps-t1 등) 우선 조회 (대소문자 무시)
+        const findExplicitRes = (refName) => {
+          if (!refName) return null;
+          if (resMap[refName]) return resMap[refName];
+          const lower = refName.toLowerCase();
+          for (const k of Object.keys(resMap)) {
+            if (k.toLowerCase() === lower) return resMap[k];
+          }
+          return null;
         };
 
-        const ovHash = ov.hash || extractHexHash(ov.section) || extractHexHash(ov.refs?.ib);
+        if (ov.refs) {
+          if (ov.refs.vb0) posRes = findExplicitRes(ov.refs.vb0);
+          if (ov.refs.ib) ibRes = findExplicitRes(ov.refs.ib);
+          if (ov.refs.vb1) tcRes = findExplicitRes(ov.refs.vb1);
+          if (!diffRes && ov.refs.diffuse) diffRes = findExplicitRes(ov.refs.diffuse);
+          if (!diffRes && ov.refs['ps-t0']) diffRes = findExplicitRes(ov.refs['ps-t0']);
+          if (!normRes && ov.refs.normal) normRes = findExplicitRes(ov.refs.normal);
+          if (!normRes && ov.refs['ps-t1']) normRes = findExplicitRes(ov.refs['ps-t1']);
+        }
 
-        // 2. 고유 해시(8자리 Hex) 기반 정확 매칭 (컴포넌트 간 버퍼 뒤섞임 100% 방지)
-        if (ovHash) {
-          for (const rKey of Object.keys(resMap)) {
-            const r = resMap[rKey];
-            const lowerKey = rKey.toLowerCase();
-            const lowerFile = (r.filename || '').toLowerCase();
-            const isHashMatch = lowerKey.includes(ovHash) || lowerFile.includes(ovHash);
+        // 2. 범용 유사도 스코어링 매칭 (컴포넌트 어근 stem + 해시 + 토큰 기반)
+        const cleanOv = ov.section.replace(/^TextureOverride_?/i, '').toLowerCase();
+        // 서브파츠 단일 접미사(예: a, b 등) 제거한 어근(stem, 예: roxywpw1a -> roxywpw1, roxybodya -> roxybody)
+        const stem = cleanOv.replace(/[a-z]$/i, '');
+        // 8자리 16진수 해시 추출
+        const hexHashMatch = cleanOv.match(/[0-9a-f]{8}/i);
+        const ovHash = hexHashMatch ? hexHashMatch[0].toLowerCase() : null;
+        // 유의미한 토큰 분리
+        const tokens = cleanOv.split(/[_ \-\/\.]+/).filter((t) => t.length >= 2 && !['ib', 'vb', 'component', 'part'].includes(t));
 
-            if (isHashMatch) {
-              if (!posRes && (lowerKey.includes('position') || lowerFile.includes('position'))) {
-                posRes = r;
-              }
-              if (!tcRes && (lowerKey.includes('texcoord') || lowerFile.includes('texcoord'))) {
-                tcRes = r;
-              }
-              if (!ibRes && (lowerKey.includes('component') || lowerKey.includes('ib') || lowerFile.includes('.ib') || lowerFile.includes('component'))) {
-                ibRes = r;
-              }
-              if (!diffRes && (lowerKey.includes('diffuse') || lowerFile.includes('diffuse'))) {
-                diffRes = r;
-              }
-              if (!normRes && (lowerKey.includes('normal') || lowerFile.includes('normal'))) {
-                normRes = r;
-              }
+        const scoreResource = (r, typeKeywords) => {
+          const rName = (r.name || '').toLowerCase();
+          const rFile = (r.filename || '').toLowerCase();
+          const combined = `${rName} ${rFile}`;
+
+          // 해당 타입 키워드가 없으면 후보 제외
+          const hasType = typeKeywords.some((kw) => combined.includes(kw));
+          if (!hasType) return -1;
+
+          let score = 10;
+
+          // 8자리 16진수 해시 일치 (최우선)
+          if (ovHash && combined.includes(ovHash)) {
+            score += 200;
+          }
+
+          // 기본 어근(stem, 예: roxywpw1, roxywpw2, roxywpwrope, roxybody) 일치
+          if (stem.length >= 3 && combined.includes(stem)) {
+            score += 150;
+          }
+
+          // 전체 섹션 기본명(cleanOv) 일치
+          if (cleanOv.length >= 3 && combined.includes(cleanOv)) {
+            score += 100;
+          }
+
+          // 토큰 일치
+          for (const tok of tokens) {
+            if (tok.length >= 3 && combined.includes(tok)) {
+              score += 50;
             }
           }
-        }
 
-        // 3. 섹션 이름 핵심 키워드 매칭 (해시가 없거나 미매칭된 항목)
-        const secBase = ov.section.replace(/^TextureOverride/i, '').toLowerCase();
-        const secTokens = secBase.split(/[_ \-\/\.]+/).filter((t) => t.length >= 3 && !['textureoverride', 'ib', 'vb', 'component'].includes(t));
+          return score;
+        };
 
-        for (const rKey of Object.keys(resMap)) {
-          const r = resMap[rKey];
-          const lowerKey = rKey.toLowerCase();
-          const lowerFile = (r.filename || '').toLowerCase();
-          const rHash = extractHexHash(lowerFile) || extractHexHash(lowerKey);
-
-          // 다른 컴포넌트의 명시적 해시가 붙어있는 리소스는 오염 방지를 위해 매칭 제외
-          if (ovHash && rHash && rHash !== ovHash) continue;
-
-          const isTokenMatch = secTokens.some((tok) => lowerKey.includes(tok) || lowerFile.includes(tok));
-
-          if (!posRes && isTokenMatch && (lowerKey.includes('position') || lowerFile.includes('position'))) {
-            posRes = r;
+        const findBestResource = (typeKeywords) => {
+          let best = null;
+          let highestScore = 0;
+          for (const rKey of Object.keys(resMap)) {
+            const r = resMap[rKey];
+            const sc = scoreResource(r, typeKeywords);
+            if (sc > highestScore) {
+              highestScore = sc;
+              best = r;
+            }
           }
-          if (!tcRes && isTokenMatch && (lowerKey.includes('texcoord') || lowerFile.includes('texcoord'))) {
-            tcRes = r;
-          }
-          if (!ibRes && isTokenMatch && (lowerKey.includes('ib') || lowerFile.endsWith('.ib') || lowerFile.includes('component'))) {
-            ibRes = r;
-          }
-          if (!diffRes && isTokenMatch && (lowerKey.includes('diffuse') || lowerFile.includes('diffuse'))) {
-            diffRes = r;
-          }
-          if (!normRes && isTokenMatch && (lowerKey.includes('normal') || lowerFile.includes('normal'))) {
-            normRes = r;
-          }
-        }
+          return best;
+        };
 
-        // 4. INI 파일 전체 공유 리소스 폴백 (단일 컴포넌트 모드용, 타 컴포넌트 해시 제외)
-        if (!posRes) {
-          posRes = Object.values(resMap).find((r) => {
-            const h = extractHexHash(r.filename) || extractHexHash(r.name);
-            if (ovHash && h && h !== ovHash) return false;
-            return (r.name || '').toLowerCase().includes('position') || (r.filename || '').toLowerCase().includes('position');
-          });
-        }
-        if (!tcRes) {
-          tcRes = Object.values(resMap).find((r) => {
-            const h = extractHexHash(r.filename) || extractHexHash(r.name);
-            if (ovHash && h && h !== ovHash) return false;
-            return (r.name || '').toLowerCase().includes('texcoord') || (r.filename || '').toLowerCase().includes('texcoord');
-          });
-        }
+        if (!posRes) posRes = findBestResource(['position']);
+        if (!tcRes) tcRes = findBestResource(['texcoord']);
+        if (!ibRes) ibRes = findBestResource(['component', 'ib']);
+        if (!diffRes) diffRes = findBestResource(['diffuse']);
+        if (!normRes) normRes = findBestResource(['normal']);
+
+        // 3. 폴백: INI 디렉터리 내 실제 파일(allFiles)에서 최고 적합 파일 검색
+        const findBestFile = (typeKeywords, defaultStride = 0) => {
+          let bestFile = null;
+          let highestScore = 0;
+          for (const f of allFiles.values()) {
+            if (!f.startsWith(ini.dir)) continue;
+            const sc = scoreResource({ name: f, filename: f }, typeKeywords);
+            if (sc > highestScore) {
+              highestScore = sc;
+              bestFile = f;
+            }
+          }
+          if (bestFile) {
+            return { filename: bestFile.split('/').pop(), stride: defaultStride };
+          }
+          return null;
+        };
+
+        if (!posRes) posRes = findBestFile(['position'], 40);
+        if (!tcRes) tcRes = findBestFile(['texcoord'], 20);
         if (!ibRes) {
-          ibRes = Object.values(resMap).find((r) => {
-            const h = extractHexHash(r.filename) || extractHexHash(r.name);
-            if (ovHash && h && h !== ovHash) return false;
-            return (r.name || '').toLowerCase().endsWith('ib') || (r.filename || '').toLowerCase().endsWith('.ib') || (r.filename || '').toLowerCase().includes('component');
-          });
-        }
-
-        // 5. 폴백: INI 디렉터리 내 실제 파일(allFiles)에서 검색
-        if (!posRes) {
-          const p = Array.from(allFiles.values()).find((f) => {
-            const lower = f.toLowerCase();
-            if (ovHash && !lower.includes(ovHash)) return false;
-            return f.startsWith(ini.dir) && lower.includes('position');
-          });
-          if (p) posRes = { filename: p.split('/').pop(), stride: 40 };
-        }
-        if (!tcRes) {
-          const p = Array.from(allFiles.values()).find((f) => {
-            const lower = f.toLowerCase();
-            if (ovHash && !lower.includes(ovHash)) return false;
-            return f.startsWith(ini.dir) && lower.includes('texcoord');
-          });
-          if (p) tcRes = { filename: p.split('/').pop(), stride: 20 };
-        }
-        if (!ibRes) {
-          const p = Array.from(allFiles.values()).find((f) => {
-            const lower = f.toLowerCase();
-            if (ovHash && !lower.includes(ovHash)) return false;
-            return f.startsWith(ini.dir) && (lower.endsWith('.ib') || lower.includes('component'));
-          });
-          if (p) ibRes = { filename: p.split('/').pop(), format: 'DXGI_FORMAT_R32_UINT' };
+          const bf = findBestFile(['ib', 'component']);
+          if (bf) ibRes = { filename: bf.filename, format: 'DXGI_FORMAT_R32_UINT' };
         }
 
 

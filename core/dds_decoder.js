@@ -1,4 +1,4 @@
-/**
+﻿/**
  * core/dds_decoder.js
  * Migoto Studio 내장 플러그인 'texture-library' (>=1.0.0)의 decodeDDS API를 호출하여
  * DDS 텍스처(BC1~BC7, sRGB/Linear)를 Three.js DataTexture로 변환합니다.
@@ -53,29 +53,25 @@ function downsampleIfNeeded(rgba, width, height, maxSize = 4096) {
  * @returns {boolean}
  */
 export function reconstructNormalZIfNeeded(data, forceNormal = false) {
+  // Diffuse/Albedo 등 일반 텍스처는 절대 노말 Z 복원을 실행하지 않음 (색상 왜곡 방지)
+  if (!forceNormal) return false;
+
   const len = data.length;
   if (len < 16) return false;
 
   const step = Math.max(4, Math.floor(len / 2000) * 4);
   let sampleCount = 0;
   let bSum = 0;
-  let rgVariance = 0;
 
   for (let i = 0; i < len; i += step) {
-    const r = data[i];
-    const g = data[i + 1];
-    const b = data[i + 2];
-    bSum += b;
-    rgVariance += Math.abs(r - 128) + Math.abs(g - 128);
+    bSum += data[i + 2];
     sampleCount++;
   }
 
   const avgB = bSum / sampleCount;
-  const avgRgDev = rgVariance / sampleCount;
 
-  // 1) 명시적 노말맵이면서 B 채널 평균이 100~155 부근이거나
-  // 2) B 채널이 115~140(약 128)에 머물며 R, G에 변화가 있는 2채널 노말맵 패턴
-  const isTwoChannel = (forceNormal && avgB >= 100 && avgB <= 160) || (avgB >= 115 && avgB <= 140 && avgRgDev > 8);
+  // 노말맵의 B 채널 평균이 100~160(약 128)인 2채널(RG 포맷)인 경우에만 Z 복원
+  const isTwoChannel = avgB >= 100 && avgB <= 160;
 
   if (isTwoChannel) {
     for (let i = 0; i < len; i += 4) {
