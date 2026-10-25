@@ -420,7 +420,7 @@ export async function loadModData({ folder, context, viewer, onProgress, forceRe
                 normalTexture = parseDdsTexture(normalBytes, context, viewer?.renderer, { isDiffuse: false, isNormal: true });
               } else {
                 const mime = normRes.filename.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg';
-                normalTexture = await loadImageTexture(normalBytes, mime, false);
+                normalTexture = await loadImageTexture(normalBytes, mime, false, { isNormal: true });
               }
             } catch (nErr) {
               context.logger?.warn(`[${ini.name}] Normal 로드 경고:`, nErr);

@@ -171,7 +171,8 @@ export class ModViewer3D {
       });
 
       if (normalTexture) {
-        mat.normalScale = new THREE.Vector2(1.0, 1.0);
+        // DirectX 노말맵(Green 채널 반전/Y-down) 특성에 맞춰 Y축 음수 스케일 적용
+        mat.normalScale = new THREE.Vector2(1.0, -1.0);
       }
 
       this.materials.push(mat);
