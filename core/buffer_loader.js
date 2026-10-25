@@ -31,50 +31,19 @@ export function parsePositionBuffer(bytes, stride = 40) {
   const positions = new Float32Array(vertexCount * 3);
   const dataView = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
 
-  let minX = Infinity, minY = Infinity, minZ = Infinity;
-  let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
-
+  // 고속 직렬화: Three.js가 자체 BoundingBox/Sphere를 계산하므로
+  // 미사용 bounds 연산(min/max 6회 비교 및 14만 정점 거리 2차 루프)을 제거하여 파싱 속도 극대화
   for (let i = 0; i < vertexCount; i++) {
     const offset = i * stride;
     // DirectX 오른손/왼손 좌표계 변환: X 그대로, Y 상향, Z 반전 (-z)
-    const x = dataView.getFloat32(offset, true);
-    const y = dataView.getFloat32(offset + 4, true);
-    const z = -dataView.getFloat32(offset + 8, true);
-
-    positions[i * 3 + 0] = x;
-    positions[i * 3 + 1] = y;
-    positions[i * 3 + 2] = z;
-
-    if (x < minX) minX = x;
-    if (x > maxX) maxX = x;
-    if (y < minY) minY = y;
-    if (y > maxY) maxY = y;
-    if (z < minZ) minZ = z;
-    if (z > maxZ) maxZ = z;
-  }
-
-  const centerX = (minX + maxX) / 2;
-  const centerY = (minY + maxY) / 2;
-  const centerZ = (minZ + maxZ) / 2;
-
-  let maxRadiusSq = 0;
-  for (let i = 0; i < vertexCount; i++) {
-    const dx = positions[i * 3] - centerX;
-    const dy = positions[i * 3 + 1] - centerY;
-    const dz = positions[i * 3 + 2] - centerZ;
-    const distSq = dx * dx + dy * dy + dz * dz;
-    if (distSq > maxRadiusSq) maxRadiusSq = distSq;
+    positions[i * 3 + 0] = dataView.getFloat32(offset, true);
+    positions[i * 3 + 1] = dataView.getFloat32(offset + 4, true);
+    positions[i * 3 + 2] = -dataView.getFloat32(offset + 8, true);
   }
 
   return {
     vertexCount,
     positions,
-    bounds: {
-      min: [minX, minY, minZ],
-      max: [maxX, maxY, maxZ],
-      center: [centerX, centerY, centerZ],
-      radius: Math.sqrt(maxRadiusSq) || 1,
-    },
   };
 }
 

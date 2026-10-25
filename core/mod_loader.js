@@ -1,4 +1,4 @@
-﻿/**
+/**
  * core/mod_loader.js
  * 모드 디렉터리 내의 모든 INI 파일들을 순회 파싱하고,
  * 3DMigoto/XXMI .buf(바이너리) 및 .ib 버퍼, DDS/이미지 텍스처를 안전하게 해석/로드합니다.
@@ -238,6 +238,50 @@ export async function loadModData({ folder, context, viewer, onProgress, forceRe
 
   const parsedIniEntries = [];
 
+  // 고속 인메모리 로딩 캐시 (동일 버퍼/텍스처 파일의 중복 디스크 I/O 및 중복 디코딩 원천 제거)
+  const fileBytesCache = new Map();
+  const parsedBufferCache = new Map();
+  const textureCache = new Map();
+
+  async function getFileBytes(filePath) {
+    if (!filePath) return null;
+    const norm = filePath.replace(/\\/g, '/');
+    if (fileBytesCache.has(norm)) {
+      return fileBytesCache.get(norm);
+    }
+    try {
+      const bytes = await context.workspace.readBinaryFile(norm);
+      fileBytesCache.set(norm, bytes);
+      return bytes;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  async function getOrLoadTexture(texPath, isNormal) {
+    if (!texPath) return null;
+    const norm = texPath.replace(/\\/g, '/');
+    const cacheKey = `${norm}_${isNormal ? 'norm' : 'diff'}`;
+    if (textureCache.has(cacheKey)) {
+      return textureCache.get(cacheKey);
+    }
+    const bytes = await getFileBytes(norm);
+    if (!bytes) return null;
+    let tex = null;
+    try {
+      if (norm.toLowerCase().endsWith('.dds')) {
+        tex = parseDdsTexture(bytes, context, viewer?.renderer, { isDiffuse: !isNormal, isNormal });
+      } else {
+        const mime = norm.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg';
+        tex = await loadImageTexture(bytes, mime, !isNormal, { isNormal });
+      }
+      if (tex) textureCache.set(cacheKey, tex);
+    } catch (e) {
+      context.logger?.warn(`[3D 뷰어] 텍스처 로드 실패 (${norm}):`, e);
+    }
+    return tex;
+  }
+
   for (let idx = 0; idx < iniFiles.length; idx++) {
     const ini = iniFiles[idx];
     onProgress?.(`[${idx + 1}/${iniFiles.length}] ${ini.name} 파싱 중…`);
@@ -408,70 +452,65 @@ export async function loadModData({ folder, context, viewer, onProgress, forceRe
 
         const posPath = resolveFilePath(ini.dir, posRes.filename);
         const ibPath = resolveFilePath(ini.dir, ibRes.filename);
+        const tcPath = tcRes && tcRes.filename ? resolveFilePath(ini.dir, tcRes.filename) : null;
+        const diffPath = diffRes && diffRes.filename ? resolveFilePath(ini.dir, diffRes.filename) : null;
+        const normPath = normRes && normRes.filename ? resolveFilePath(ini.dir, normRes.filename) : null;
 
         try {
-          onProgress?.(`[${ini.name}] 3D 버퍼 로딩 중…`);
-          const [posBytes, ibBytes] = await Promise.all([
-            context.workspace.readBinaryFile(posPath),
-            context.workspace.readBinaryFile(ibPath),
+          onProgress?.(`[${ini.name}] 3D 버퍼 및 텍스처 로딩 중…`);
+
+          // 필요한 파일 바이너리들을 캐시 기반으로 동시 병렬 로드 (중복 디스크 I/O 제거)
+          const [posBytes, ibBytes, tcBytes] = await Promise.all([
+            getFileBytes(posPath),
+            getFileBytes(ibPath),
+            tcPath ? getFileBytes(tcPath) : Promise.resolve(null),
           ]);
 
+          if (!posBytes || !ibBytes) {
+            context.logger?.warn(`[${ini.name}] 필수 버퍼 파일 누락: ${posPath} 또는 ${ibPath}`);
+            continue;
+          }
+
           const stride = parseInt(posRes.stride, 10) || 40;
-          const { positions, vertexCount } = parsePositionBuffer(posBytes, stride);
-          const indices = parseIndexBuffer(ibBytes, ibRes.format || 'DXGI_FORMAT_R32_UINT');
+          const posCacheKey = `${posPath}_${stride}`;
+          let posData = parsedBufferCache.get(posCacheKey);
+          if (!posData) {
+            posData = parsePositionBuffer(posBytes, stride);
+            parsedBufferCache.set(posCacheKey, posData);
+          }
+          const { positions, vertexCount } = posData;
+
+          const ibFormat = ibRes.format || 'DXGI_FORMAT_R32_UINT';
+          const ibCacheKey = `${ibPath}_${ibFormat}`;
+          let indices = parsedBufferCache.get(ibCacheKey);
+          if (!indices) {
+            indices = parseIndexBuffer(ibBytes, ibFormat);
+            parsedBufferCache.set(ibCacheKey, indices);
+          }
 
           iniVertexCount += vertexCount;
 
-          // Texcoord 로드
+          // Texcoord 파싱 (캐시 재사용)
           let uvs = null;
-          if (tcRes && tcRes.filename) {
-            try {
-              const tcPath = resolveFilePath(ini.dir, tcRes.filename);
-              const tcBytes = await context.workspace.readBinaryFile(tcPath);
-              const tcStride = parseInt(tcRes.stride, 10) || 20;
+          if (tcBytes) {
+            const tcStride = parseInt(tcRes.stride, 10) || 20;
+            const tcCacheKey = `${tcPath}_${tcStride}_${vertexCount}`;
+            uvs = parsedBufferCache.get(tcCacheKey);
+            if (!uvs) {
               uvs = parseTexcoordBuffer(tcBytes, tcStride, vertexCount);
-            } catch (tcErr) {
-              context.logger?.warn(`[${ini.name}] Texcoord 로드 경고:`, tcErr);
+              parsedBufferCache.set(tcCacheKey, uvs);
             }
           }
 
-          // 텍스처 로드 (오류 발생 시에도 메쉬 표시는 절대 중단되지 않음)
-          let diffuseTexture = null;
-          let normalTexture = null;
-          let diffuseBytes = null;
-          let normalBytes = null;
-          let diffuseIsDds = false;
+          // 텍스처 로드 (중복 디코딩 제거 및 병렬 처리)
+          const [diffuseTexture, normalTexture] = await Promise.all([
+            diffPath ? getOrLoadTexture(diffPath, false) : Promise.resolve(null),
+            normPath ? getOrLoadTexture(normPath, true) : Promise.resolve(null),
+          ]);
 
-          if (diffRes && diffRes.filename) {
-            try {
-              const dPath = resolveFilePath(ini.dir, diffRes.filename);
-              diffuseBytes = await context.workspace.readBinaryFile(dPath);
-              if (diffRes.filename.toLowerCase().endsWith('.dds')) {
-                diffuseIsDds = true;
-                diffuseTexture = parseDdsTexture(diffuseBytes, context, viewer?.renderer, { isDiffuse: true, isNormal: false });
-              } else {
-                const mime = diffRes.filename.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg';
-                diffuseTexture = await loadImageTexture(diffuseBytes, mime, true);
-              }
-            } catch (dErr) {
-              context.logger?.warn(`[${ini.name}] Diffuse 로드 경고:`, dErr);
-            }
-          }
-
-          if (normRes && normRes.filename) {
-            try {
-              const nPath = resolveFilePath(ini.dir, normRes.filename);
-              normalBytes = await context.workspace.readBinaryFile(nPath);
-              if (normRes.filename.toLowerCase().endsWith('.dds')) {
-                normalTexture = parseDdsTexture(normalBytes, context, viewer?.renderer, { isDiffuse: false, isNormal: true });
-              } else {
-                const mime = normRes.filename.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg';
-                normalTexture = await loadImageTexture(normalBytes, mime, false, { isNormal: true });
-              }
-            } catch (nErr) {
-              context.logger?.warn(`[${ini.name}] Normal 로드 경고:`, nErr);
-            }
-          }
+          const diffuseBytes = diffPath ? fileBytesCache.get(diffPath.replace(/\\/g, '/')) || null : null;
+          const normalBytes = normPath ? fileBytesCache.get(normPath.replace(/\\/g, '/')) || null : null;
+          const diffuseIsDds = diffPath ? diffPath.toLowerCase().endsWith('.dds') : false;
 
           iniComponents.push({
             name: ov.section,

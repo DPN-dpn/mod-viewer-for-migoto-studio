@@ -181,6 +181,14 @@ export class ModViewer3D {
       const posAttr = new THREE.BufferAttribute(positions, 3);
       const uvAttr = uvs && uvs.length > 0 ? new THREE.BufferAttribute(uvs, 2) : null;
 
+      // 전체 컴포넌트 기준 버텍스 법선(Normal)을 1회만 계산하여 공유
+      // 파츠마다 14만 정점 노말을 N번 중복 재계산하는 치명적 랙을 방지하고 접합면 스무딩 보장
+      const baseGeo = new THREE.BufferGeometry();
+      baseGeo.setAttribute('position', posAttr);
+      baseGeo.setIndex(new THREE.BufferAttribute(indices, 1));
+      baseGeo.computeVertexNormals();
+      const normalAttr = baseGeo.getAttribute('normal');
+
       if (parts && parts.length > 0) {
         for (const part of parts) {
           const subIndices = indices.subarray(part.firstIndex, part.firstIndex + part.count);
@@ -188,9 +196,9 @@ export class ModViewer3D {
 
           const subGeo = new THREE.BufferGeometry();
           subGeo.setAttribute('position', posAttr);
+          if (normalAttr) subGeo.setAttribute('normal', normalAttr);
           if (uvAttr) subGeo.setAttribute('uv', uvAttr);
           subGeo.setIndex(new THREE.BufferAttribute(subIndices, 1));
-          subGeo.computeVertexNormals();
 
           // 각 파츠별로 독립된 머티리얼을 할당하여 파츠별 텍스처 교체를 지원합니다.
           const partMat = mat.clone();
@@ -211,16 +219,14 @@ export class ModViewer3D {
         }
       } else {
         // 단일 메쉬
-        const geo = new THREE.BufferGeometry();
-        geo.setAttribute('position', posAttr);
-        if (uvAttr) geo.setAttribute('uv', uvAttr);
-        geo.setIndex(new THREE.BufferAttribute(indices, 1));
-        geo.computeVertexNormals();
+        baseGeo.setAttribute('position', posAttr);
+        if (normalAttr) baseGeo.setAttribute('normal', normalAttr);
+        if (uvAttr) baseGeo.setAttribute('uv', uvAttr);
 
         const singleMat = mat.clone();
         this.materials.push(singleMat);
 
-        const mesh = new THREE.Mesh(geo, singleMat);
+        const mesh = new THREE.Mesh(baseGeo, singleMat);
         mesh.name = name || 'Model';
         this.orientationGroup.add(mesh);
         this.partMeshes.push({
