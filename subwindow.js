@@ -153,24 +153,47 @@ export async function open3DViewerSubWindow(context) {
     render(container, handle) {
       subWinContainerRef = container;
 
-      // 서브윈도우 기본값 최대화 상태 적용
-      requestAnimationFrame(() => {
+      // 서브 윈도우 타이틀바의 기존 '최대화/복원' 버튼을 기본 켜놓기
+      const triggerMaximize = () => {
         try {
           if (typeof handle?.maximize === 'function') {
             handle.maximize();
-          } else if (typeof currentSubWin?.maximize === 'function') {
+            return;
+          }
+          if (typeof currentSubWin?.maximize === 'function') {
             currentSubWin.maximize();
+            return;
+          }
+
+          const winEl = container.closest?.('.sub-window, .subwindow, .floating-window, [class*="window"], [class*="dialog"]') || container.parentElement;
+          if (!winEl) return;
+
+          // 이미 최대화 상태이면 패스
+          if (winEl.classList.contains('maximized') || winEl.classList.contains('is-maximized')) return;
+
+          const maxBtn = winEl.querySelector?.(
+            'button[title*="최대화"], button[aria-label*="최대화"], button[title*="Maximize"], button[aria-label*="Maximize"], .btn-maximize, .window-maximize, [class*="maximize"]'
+          );
+
+          if (maxBtn) {
+            maxBtn.click();
           } else {
-            const winEl = container.closest?.('.sub-window, .subwindow, .floating-window, [class*="sub-window"], [class*="subwindow"]');
-            if (winEl && !winEl.classList.contains('maximized') && !winEl.classList.contains('is-maximized')) {
-              const maxBtn = winEl.querySelector?.('button[title*="최대화"], button[aria-label*="최대화"], .btn-maximize, .window-maximize, [class*="maximize"]');
-              maxBtn?.click?.();
+            const header = winEl.querySelector?.('[class*="header"], [class*="titlebar"], [class*="title-bar"]') || winEl.firstElementChild;
+            const btns = header ? Array.from(header.querySelectorAll('button')) : [];
+            if (btns.length >= 2) {
+              const candidate = btns[btns.length - 2];
+              if (candidate && !candidate.title?.includes?.('닫기') && !candidate.classList?.contains?.('close')) {
+                candidate.click();
+              }
             }
           }
-        } catch (e) {
+        } catch {
           // ignore
         }
-      });
+      };
+
+      requestAnimationFrame(triggerMaximize);
+      setTimeout(triggerMaximize, 50);
 
       // PiP에서 Dock In으로 복귀했을 때 이미 인스턴스가 살아있으면 최신 activeViewState를 즉시 적용
       if (container.__modViewerInstance) {
