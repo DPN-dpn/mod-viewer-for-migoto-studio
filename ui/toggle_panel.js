@@ -10,6 +10,7 @@ export class TogglePanel {
    * @param {object} options
    * @param {Record<string, number>} options.constants - 기본 변수값
    * @param {Record<string, number[]>} options.keyBindings - 변수별 가능한 상태값 리스트
+   * @param {Record<string, string>} [options.varSourceIni] - 변수별 소속 INI 파일명 매핑
    * @param {Array<{ name: string, condition: string, count: number, id?: string, textureFile?: string, slot?: any }>} options.parts - 파츠 목록
    * @param {(variables: Record<string, number>) => void} options.onChange - 값 변경 콜백
    * @param {(part: any, textureFile: string) => void} [options.onTextureChange] - 파츠별 텍스처 변경 콜백
@@ -17,7 +18,7 @@ export class TogglePanel {
    * @param {Record<string, string>} [options.partTextures] - 파츠별 현재 선택된 텍스처 매핑
    * @param {object} [options.context] - PluginContext 객체
    */
-  constructor(container, { constants, keyBindings, parts, onChange, onTextureChange, detectedTextures, partTextures, context }) {
+  constructor(container, { constants, keyBindings, parts, onChange, onTextureChange, detectedTextures, partTextures, context, varSourceIni }) {
     this.container = container;
     this.constants = { ...constants };
     this.keyBindings = keyBindings || {};
@@ -27,6 +28,7 @@ export class TogglePanel {
     this.detectedTextures = detectedTextures || [];
     this.partTextures = { ...(partTextures || {}) };
     this.context = context;
+    this.varSourceIni = varSourceIni || {};
     this.currentValues = { ...this.constants };
 
     this.render();
@@ -47,11 +49,17 @@ export class TogglePanel {
     const varListContainer = document.createElement('div');
     varListContainer.className = 'var-list-container';
 
-    const varNames = Object.keys(this.currentValues);
+    // 현재 활성화된 INI에 속하며 사용자가 조작 가능한 토글 변수만 선별 (내부 드로우 플래그 및 임시 백슬래시 변수 제외)
+    const varNames = Object.keys(this.currentValues).filter((v) => {
+      if (/^\$active\d*$/i.test(v)) return false;
+      if (v.includes('\\')) return false;
+      return true;
+    });
+
     if (varNames.length === 0) {
       const emptyNote = document.createElement('div');
       emptyNote.className = 'empty-note';
-      emptyNote.textContent = 'INI 파일에 정의된 토글 변수가 없습니다.';
+      emptyNote.textContent = '현재 활성화된 INI에 정의된 조작 가능한 토글 변수가 없습니다.';
       varListContainer.appendChild(emptyNote);
     } else {
       for (const varName of varNames) {
@@ -115,12 +123,20 @@ export class TogglePanel {
     const label = document.createElement('span');
     label.className = 'var-label';
     label.textContent = varName;
+    header.appendChild(label);
+
+    const sourceIni = this.varSourceIni?.[varName];
+    if (sourceIni) {
+      const iniBadge = document.createElement('span');
+      iniBadge.className = 'var-ini-badge';
+      iniBadge.textContent = sourceIni;
+      iniBadge.title = `출처 INI: ${sourceIni}.ini`;
+      header.appendChild(iniBadge);
+    }
 
     const valueBadge = document.createElement('span');
     valueBadge.className = 'var-badge';
     valueBadge.textContent = `값: ${this.currentValues[varName]}`;
-
-    header.appendChild(label);
     header.appendChild(valueBadge);
     row.appendChild(header);
 

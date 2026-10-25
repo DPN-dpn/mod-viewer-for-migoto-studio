@@ -175,6 +175,20 @@
   color: #f1f5f9;
 }
 
+.var-ini-badge {
+  font-size: 10px;
+  background: #1e293b;
+  color: #a5b4fc;
+  border: 1px solid #3730a3;
+  padding: 1px 6px;
+  border-radius: 6px;
+  margin-left: 6px;
+  margin-right: auto;
+  font-family: monospace;
+  font-weight: 500;
+  letter-spacing: 0.3px;
+}
+
 .var-badge {
   font-size: 11px;
   background: #2a3446;

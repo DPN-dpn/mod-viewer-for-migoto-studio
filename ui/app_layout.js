@@ -263,7 +263,11 @@ export function render3DViewer(container, context, initialFolder, onFolderChange
         statusbar.setValue('tris', `${visibleTriangles.toLocaleString()} / ${totalTriangles.toLocaleString()}`);
       }
       if (activeTogglePanel) {
-        activeTogglePanel.currentValues = { ...activeTogglePanel.currentValues, ...currentViewState.variables };
+        for (const k of Object.keys(activeTogglePanel.currentValues)) {
+          if (currentViewState.variables[k] !== undefined) {
+            activeTogglePanel.currentValues[k] = currentViewState.variables[k];
+          }
+        }
         activeTogglePanel.render();
       }
     }
@@ -357,6 +361,40 @@ export function render3DViewer(container, context, initialFolder, onFolderChange
       return;
     }
 
+    // 1. 현재 활성화된 INI들에 실제로 속한 변수 키 목록 및 INI 소속 맵 수집
+    const enabledVarNames = new Set();
+    const varSourceIni = {}; // varName -> iniName
+
+    for (const entry of enabledEntries) {
+      const cleanIniName = entry.name.replace(/\.ini$/i, '');
+      if (entry.constants) {
+        for (const k of Object.keys(entry.constants)) {
+          enabledVarNames.add(k);
+          if (!varSourceIni[k]) varSourceIni[k] = cleanIniName;
+        }
+      }
+      if (entry.keyBindings) {
+        for (const k of Object.keys(entry.keyBindings)) {
+          enabledVarNames.add(k);
+          if (!varSourceIni[k]) varSourceIni[k] = cleanIniName;
+        }
+      }
+      if (entry.parts) {
+        for (const pt of entry.parts) {
+          if (pt.condition) {
+            const matches = pt.condition.match(/\$[a-zA-Z0-9_]+/g);
+            if (matches) {
+              for (const m of matches) {
+                const lower = m.toLowerCase();
+                enabledVarNames.add(lower);
+                if (!varSourceIni[lower]) varSourceIni[lower] = cleanIniName;
+              }
+            }
+          }
+        }
+      }
+    }
+
     const mergedConstants = {};
     const mergedKeyBindings = {};
     const allComponents = [];
@@ -364,16 +402,35 @@ export function render3DViewer(container, context, initialFolder, onFolderChange
     let totalVertexCount = 0;
 
     for (const entry of enabledEntries) {
-      Object.assign(mergedConstants, entry.constants);
-      Object.assign(mergedKeyBindings, entry.keyBindings);
+      if (entry.constants) {
+        for (const [k, v] of Object.entries(entry.constants)) {
+          mergedConstants[k] = v;
+        }
+      }
+      if (entry.keyBindings) {
+        for (const [k, v] of Object.entries(entry.keyBindings)) {
+          mergedKeyBindings[k] = v;
+        }
+      }
       allComponents.push(...entry.components);
       allParts.push(...entry.parts);
       totalVertexCount += entry.vertexCount;
     }
 
-    // 복원할 토글 변수값이 저장되어 있으면 병합 적용
+    // 복원할 토글 변수값이 저장되어 있으면, '오직 현재 활성화된 INI에 속한 변수'만 병합 적용 (타 INI 변수 누출 차단)
     if (currentViewState.variables && Object.keys(currentViewState.variables).length > 0) {
-      Object.assign(mergedConstants, currentViewState.variables);
+      for (const [k, v] of Object.entries(currentViewState.variables)) {
+        if (enabledVarNames.has(k)) {
+          mergedConstants[k] = v;
+        }
+      }
+      const filteredVars = {};
+      for (const [k, v] of Object.entries(currentViewState.variables)) {
+        if (enabledVarNames.has(k)) {
+          filteredVars[k] = v;
+        }
+      }
+      currentViewState.variables = filteredVars;
     }
 
     if (allComponents.length === 0) {
@@ -397,9 +454,15 @@ export function render3DViewer(container, context, initialFolder, onFolderChange
     statusbar.setValue('parts', `${allParts.length}개`);
 
     // 우측 토글 컨트롤 패널 바인딩 (파츠별 텍스처 변경 드롭다운 연동)
+    if (activeTogglePanel) {
+      activeTogglePanel.destroy?.();
+      activeTogglePanel = null;
+    }
+
     activeTogglePanel = new TogglePanel(sidebar, {
       constants: mergedConstants,
       keyBindings: mergedKeyBindings,
+      varSourceIni,
       parts: allParts,
       detectedTextures: currentDetectedTextures,
       partTextures: currentViewState.customTextures || {},
